@@ -62,7 +62,7 @@
 
 /**
  * CPURegister, store CPU registers values.
- * 
+ *
  * @param index   CPU index register (di, si)
  * @param stack   CPU stack register (bp, sp)
  * @param general CPU general purpose register (a, b, c, d)
@@ -94,10 +94,10 @@ struct CPURegister {
 /**
  * InterruptStack, data pushed by CPU when interrupt / exception is raised.
  * Refer to Intel x86 Vol 3a: Figure 6-4 Stack usage on transfer to Interrupt.
- * 
- * Note, when returning from interrupt handler with iret, esp must be pointing to eip pushed before 
+ *
+ * Note, when returning from interrupt handler with iret, esp must be pointing to eip pushed before
  * or in other words, CPURegister, int_number and error_code should be pop-ed from stack.
- * 
+ *
  * @param error_code Error code that pushed with the exception
  * @param eip        Instruction pointer where interrupt is raised
  * @param cs         Code segment selector where interrupt is raised
@@ -114,7 +114,7 @@ struct InterruptStack {
  * InterruptFrame, entirety of general CPU states exactly before interrupt.
  * When used for interrupt handler, cpu.stack is kernel state before C function called,
  * not user stack when it get called. Check InterruptStack and interprivilege interrupt for more detail.
- * 
+ *
  * @param cpu        CPU state
  * @param int_number Interrupt vector value
  * @param int_stack  Hardware-defined (x86) stack state, note: will not access interprivilege ss and esp
@@ -142,13 +142,13 @@ void pic_remap(void);
 /**
  * Main interrupt handler when any interrupt / exception is raised.
  * DO NOT CALL THIS FUNCTION.
- * 
- * This function will be called first if any INT 0x00 - 0x40 is raised, 
+ *
+ * This function will be called first if any INT 0x00 - 0x40 is raised,
  * and will call proper ISR for respective interrupt / exception.
- * 
+ *
  * If inter-privilege interrupt raised, SS and ESP is automatically out of main_interrupt_handler()
  * parameter. Can be checked with ((int*) info) + 4 for user $esp, 5 for user $ss
- * 
+ *
  * Again, this function is not for normal function call, all parameter will be automatically set when interrupt is called.
  * @param frame Information about CPU during interrupt is raised
  */
