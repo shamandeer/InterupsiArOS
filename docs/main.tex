@@ -1,0 +1,39 @@
+%!TEX program = lualatex
+
+% Shamelessly stolen template from Algeo
+
+\documentclass[12pt]{report}
+\usepackage[utf8]{inputenc}
+\usepackage[a4paper, left=3cm, right=2.5cm, top=2.5cm, bottom=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage{microtype}
+\usepackage{float}
+\usepackage{amsmath}
+\usepackage{indentfirst}
+\usepackage{amssymb}
+\usepackage[backend=biber, style=apa]{biblatex}
+\onehalfspacing
+
+\begin{document}
+
+\titleformat{\chapter}[display]
+{\normalfont\huge\bfseries}
+{\chaptertitlename\ \thechapter}
+{10pt}
+{}
+{}
+
+\titlespacing{\chapter}
+{0pt}
+{1em}
+{40pt}
+
+\input{chapters/titlepage}
+\newpage
+\include{chapters/pendahuluan}
+
+\end{document}
