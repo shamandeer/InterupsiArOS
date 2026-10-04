@@ -15,10 +15,20 @@
 \usepackage{amsmath}
 \usepackage{indentfirst}
 \usepackage{amssymb}
-\usepackage[backend=biber, style=apa]{biblatex}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
 \onehalfspacing
 
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[R]{InterupsiArOS}
+
 \begin{document}
+
+\lstset{
+    breaklines=true, % Enables automatic line breaking
+}
 
 \titleformat{\chapter}[display]
 {\normalfont\huge\bfseries}
@@ -35,5 +45,6 @@
 \input{chapters/titlepage}
 \newpage
 \include{chapters/pendahuluan}
+\include{chapters/ch1.tex}
 
 \end{document}

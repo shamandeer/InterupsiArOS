@@ -1,0 +1,226 @@
+\chapter{TOOLCHAIN, KERNEL, \& GDT}
+
+\section{How an OS starts up}
+
+Bagaimana booting sebuah OS komputer sebenarnya terjadi? Secara singkat, jawabannya adalah sebagai berikut:
+
+\begin{enumerate}
+    \item Listrik mengalir ke hardware
+    \item CPU menjalankan firmware BIOS (Basic Input/Output System) yang terdapat di motherboard
+    \item BIOS menjalankan POST (Power-On Self Test) yang melakukan pengecekan terhadap fungsionalitas hardware
+    \item Jika POST berhasil, BIOS akan memuat MBR (Master Boot Record), yaitu sektor 512 bytes pertama pada bootable device (penyimpanan yang mengandung OS), ke RAM
+    \item MBR menjalankan kode Bootstrap, lalu Bootstrap memindahkan Bootloader dari bootable device ke RAM dan mengeksekusinya
+    \item Bootloader memindahkan OS ke RAM sehingga OS akhirnya dapat digunakan
+\end{enumerate}
+
+Fungsinya bisa disimpulkan sendiri dari nama-namanya.
+
+\section{File-file awal aneh}
+
+File-file ini disediaiin sedari awal.
+
+\subsection{grub1}
+
+File grub1 yang terletak di other/grub1 adalah bootloader yang dipakai di Tubes OS ini.
+
+\subsection{kernel-entrypoint.s}
+
+Kernel itu apa ya kak? Kernel itu adalah inti dari sebuah OS yang menjalankan hal-hal seperti syscall, manajemen memori, scheduling, dll. Basically kernel adalah core dari penyambung interface dengan hardware.
+
+Perlu diketahui bahwa kernel tidak bisa langsung membaca bahasa C, namun harus melalui kode Assembly terlebih dahulu, yang dalam kasus ini adalah kernel-entrypoint.s itu sendiri (dibantu loader juga, tapi itu nanti).
+
+Secara umum, yang dilakukan oleh kernel-entrypoint.s adalah set-up agar loader dan GRUB bisa melakukan pekerjaannya. kernel-entrypoint.s menyediakan Call Stack juga agar bahasa C dapat digunakan. kernel-entrypoint.s juga melakukan load\_gdt.
+
+\subsection{kernel-entrypoint.h}
+
+Not to be confused with kernel-entrypoint.s, tapi ini header file buat eksekusi load\_gdt.
+
+\subsection{gdt.h}
+
+Header untuk... GDT. Nanti dibahas lagi.
+
+\subsection{string.h \& string.c}
+
+Ini udah kepake belom yah
+
+\subsection{Makefile}
+
+Ya basically buat automate compiling and linking and all that aja sih.
+
+\section{Kernel and Linker}
+
+\subsection{kernel.c}
+
+Basically main programnya. Atur-atur lah.
+
+\subsection{linker.ld}
+
+Basically yang melakukan menggabungkan objek hasil kompilasi jadi satu binary executable. Entry dilakukan dari loader. Kode di-run dengan batas bawah 0x00100000 (1 MB) serta aligning by 4 KB lots of things like:
+
+\begin{itemize}
+    \item .multiboot \\
+    Atur-atur lah, multiboot header supaya kernel bisa dicari sama GRUB
+    \item .text \\
+    Menyimpan kode program
+    \item .rodata \\
+    Menyimpan read only     
+    \item .data \\
+    Menyimpan global variabel
+    \item .bss \\
+    Menyimpan uninitialized variables
+\end{itemize}
+
+
+\section{Buat apa Makefile?}
+
+Seperti yang dijelaskan sebelumnya, fungsi Makefile adalah untuk melakukan kompilasi dan linking serta as a whole mengotomasi proses building proyek.
+
+\begin{lstlisting}[language=make]
+ASM           = nasm
+
+UNAME_S      := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+LLVM_PREFIX  := $(shell brew --prefix llvm)
+CC            = clang
+LIN           = $(shell brew --prefix lld)/bin/ld.lld
+II            = mkisofs
+ARCH_CFLAG    = --target=i386-elf -march=i386 -mno-mmx -mno-sse  -mno-sse2 -mno-avx -msoft-float -Wno-unused-command-line-argument
+else
+CC            = gcc
+LIN           = ld
+II            = genisoimage
+ARCH_CFLAG    =
+endif
+\end{lstlisting}
+
+Basically ini buat setup compiler, linker, dan tool genisoimage. Dibedakan untuk macOS dan Linux yang bisa dilihat dari ifeq dan else-nya.
+
+\begin{lstlisting}[language=make]
+SOURCE_FOLDER = src
+OUTPUT_FOLDER = bin
+ISO_NAME      = OS2025
+\end{lstlisting}
+
+Ini buat lokasi folder source, output, dan file name iso yang ingin dibuat
+
+\begin{lstlisting}[language=make]
+WARNING_CFLAG = -Wall -Wextra -Werror
+DEBUG_CFLAG   = -fshort-wchar -g
+STRIP_CFLAG   = -nostdlib -fno-stack-protector -nostartfiles -nodefaultlibs -ffreestanding
+CFLAGS        = $(DEBUG_CFLAG) $(WARNING_CFLAG) $(STRIP_CFLAG) $(ARCH_CFLAG) -fno-builtin -m32 -c -I$(SOURCE_FOLDER)
+AFLAGS        = -f elf32 -g -F dwarf
+LFLAGS        = -T $(SOURCE_FOLDER)/linker.ld -melf_i386
+IFLAGS        = -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -input-charset utf8 -quiet -boot-info-table
+\end{lstlisting}
+
+CFLAGS buat GCC, AFLAGS buat ASM, LFLAGS buat Linker, IFLAGS buat ISO maker. Probably ga perlu terlalu paham terlalu banyak terkait flags-flagsnya.
+
+\begin{lstlisting}[language=make]
+run: all
+	@qemu-system-i386 -s -S -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+all: build
+build: iso
+clean:
+	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel
+\end{lstlisting}
+
+\texttt{run} untuk \texttt{build} dan run OS dari ISO pakai qemu. \texttt{all} and \texttt{build} harusnya melakukan hal yang sama, yaitu membuat disk image ISO, also does \texttt{kernel}. \texttt{kernel} buat ngurus ASM, GCC, dan Linker. \texttt{clean} buat bersihin file output.
+
+PASTIKAN SETIAP C FILE BARU TAMBAHIN DI COMPILE KERNEL!!!
+
+\section{Global Descriptor Table (GDT)}
+
+Basically, GDT adalah tabel yang berisi Segment Descriptor. Segment Descriptor ini adalah tipe data yang menyimpan informasi-informasi tentang suatu segmen, which is daerah memori linier. Informasi yang disimpan terutama adalah flag-flag dan tingkat hak akses tertentu. Di proyek ini, kita pakai Descriptor Privilege Level (DPL) Ring 0 untuk Kernel Mode dan Ring untuk User Mode.
+
+\subsection{gdt.h dan gdt.c (gabung aja lah ya)}
+
+\begin{itemize}
+\item \texttt{GDT\_MAX\_ENTRY\_COUNT 32} \\
+Ukuran maksimal Segment Descriptor dalam suatu GDT
+\item \texttt{GDT\_KERNEL\_CODE\_SEGMENT\_SELECTOR} \\
+Indeks Segment Tipe Code (nanti dijelasin), whichis Indeks Pertama whichis sizeof(SegmentDescriptor) whichis 8 bytes. 8 bytes kali 1 = 0x8
+\item \texttt{GDT\_KERNEL\_DATA\_SEGMENT\_SELECTOR} \\
+Indeks Segment Tipe Data (nanti dijelasin) whichis indeks kedua jadi 0x10 aka 16.
+\item \texttt{SegmentDescriptor} \\
+Struct representasi SegmentDescriptor. SegmentDescriptor berukuran 8 byte. Bisa dilihat memanfaatkan kemampuan C untuk menyesuaikan ukuran bit suatu tipe data (sintaks bit-field). Isi SegmentDescriptor dideskripsikan in a bit. Also notice, di struct ini dan beberapa struct lainnya ada \_\_attribute\_\_((packed)). Funginya adalah supaya ga ditambahin padding of any sorts jadi ukurannya emang udah fix segitu.
+\item \texttt{GlobalDescriptorTable} \\
+Memuat array berukuran entri maksimum tipe data SegmentDescriptor
+\item \texttt{GDTR} \\
+Basically register yang memuat informasi terkait GDT supaya bisa dicari CPU di RAM. Memuat ukuran GDT dan alamatnya. Note ada extern struct GDTR bernama \_\_gdt\_gdtr, basically dibuat variabel global shared lah. Sizenya sizeof gdt dikurangi 1
+\end{itemize}
+
+Gambarnya liat sendiri di Buku dan Intel Manual.
+
+Jika kita bagi dari segi definisi dan fungsinya, ada bagian-bagian berikut:
+\begin{itemize}
+\item Segment Limit Field \\
+Ukuran dari segment. Diwakili oleh segment\_low di bit 0-15 di 16 byte pertama dan segment\_high di bit ... itung sendiri udah gede. Ukuran juga itung sendiri be.
+\item Base Address Field \\
+Menyatakan alamat fisik awal dari lokasi segmen. Diwakili oleh base\_low, base\_mid, dan base\_high.
+\item Type Field \\
+Tipe dan hak akses segmen. Misalnya executable (code), readable, atau writable. Diwakili oleh type\_bit.
+\item S (Descriptor Type) Flag \\
+Jika 1, segmennya kode/data. Jika 0, segmennya sistem. Karena di kita kode/data semua, jadi dinamain non\_system.
+\item DPL Flag \\
+Ring-ring DPL-nya. Diwakili oleh privilege.
+\item P (Present) Flag
+Jika segmen ada di RAM, nilainya 1. Diwakili oleh valid\_bit.
+\item AVL (Available and Reserved Bit) Flag \\
+Available bit, sesuaikan saja SPARTANS. Diwakili avl.
+\item L (64-Bit Code) Flag \\
+Digunakan pada arsitektur x64. Di kita, nilainya 0 karena kita bikin sistem x86. Diwakili long\_mode.
+\item D/B (Default Operation Size/Default Stack Pointer And/Or Upper Bound) Flag \\
+Basically ngatur ukuran operasi (executable segment), ukuran stack pointer, dan upper bound segment.
+Nilainya 1 jika 32-bit system, 0 jika 16-bit. Diwakili oleh opr\_32\_bit.
+\item G (Granularity) Flag \\
+Scaling segment limit. Kalo 0, pake unit per byte jadi maks 1 MB. Kalo 1, per 4KB jadi maks 4GB. Diwakili oleh granularity.
+\end{itemize}
+
+Terlihat susunannya seperti di bawah.
+\begin{lstlisting}[language=c]
+    // First 32-bit
+    uint16_t segment_low;
+    uint16_t base_low;
+
+    // Next 16-bit (Bit 32 to 47)
+    uint8_t base_mid;
+    uint8_t type_bit   : 4;
+    uint8_t non_system : 1; 
+    uint8_t privilege  : 2;
+    uint8_t valid_bit  : 1;
+
+    uint8_t segment_high : 4;
+    uint8_t avl          : 1;
+    uint8_t long_mode    : 1;
+    uint8_t opr_32_bit   : 1;
+    uint8_t granularity  : 1;
+    uint8_t base_high;
+\end{lstlisting}
+
+\subsection{Load GDT}
+
+Di kernel.c, kita cukup menambahkan:
+
+\begin{lstlisting}[language=c]
+void kernel_setup(void) {
+    // ...
+    load_gdt(&_gdt_gdtr);
+    // ...
+}
+\end{lstlisting}
+
+\subsection{Bonusan aja sih}
+
+Di gdt.c dan possibly beberapa file ke depan, kita pakai yang namanya Designated Initializers (pokoknya depannya pakai titik). Teknik ini dipakai supaya langsung mengacu ke variabel di struct pada posisi address yang bersesuaian terlepas dari urutan kita menginputnya.
+
+Sesuai tabel GDT yang kita buat, indeks ke-0 diisi GDT null, indeks ke-1 buat segmen Kernel Code, indeks ke-2 buat segmen Kernel Data.
+
+Aturan-aturannya bisa dilihat sendiri di buku.
+
+Kernel Code bersifat Read-only and Executable dan berfungsi menyimpan instruksi binary yang dikompilasi. Kernel Data bersifat Read-write and Non-executable dan berfungsi menyimpan variabel global, stack kernel, dan system-wide structures.
+
+Ya buzzword buzzword dikit. Tapi FYI aja.
+
+\section{Awal Mula Kebangkitan Ares}
+
+Dunia akan digetarkan oleh prosedur-prosedur yang kami buat demi cinta kami kepada kota kami terdahulu, SPARTA. Persiapan kami dalam membangkitkan kembali mimpi-mimpi mulianya akan memberikan esensi derap langkah pejuang-pejuang yang berjiwa ksatria dan pantang menyerah terus berjuang bersama bersatu berhimpun dalam menghadapi musuh-musuh pengecut yang akan terpecut oleh keberanian dan keinginan untuk memperluas daerah kebengisannya menuju pusat ekonomi yang maju dari robohan kehancuran peradaban yang lemah. Awal mula ini menjadi momentum bagi kita semua untuk mengapresiasi bagaimana persiapan kami dalam meneteskan pengaruh sang Dewa Perang di kehidupan modern ini merupakan fondasi dalam pembentukan dunia yang terstruktur, berdaulat, adil, dan makmur.
