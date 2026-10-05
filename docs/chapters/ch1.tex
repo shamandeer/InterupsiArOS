@@ -1,0 +1,223 @@
+\chapter{Framebuffer, Interrupt, Driver}
+
+\section{Driver Text Framebuffer}
+
+Framebuffer essentially adalah region di memory yang menyimpan bit-bit yang basically akan ditunjukkan ke Interface User. Pada tubes ini, by default kita pakai VGA3 which supports resolusi karakter ASCII 80x25. Mekanisme komunikasinya ada Memory-Mapped I/O yang membaca dan mengedit memori di lokasi tertentu serta Port-Mapped I/O melewati port pake ASM.
+
+\section{framebuffer.h dan framebuffer.c}
+
+Constants: \texttt{FRAMEBUFFER\_MEMORY\_OFFSET} basically marks awal dari terminal framebuffer. \texttt{CURSOR\_PORT\_CMD} dan \texttt{CURSOR\_PORT\_DATA} is magic.
+
+\subsection{framebuffer\_write}
+
+Menuliskan karakter ke framebuffer menggunakan 2 bytes memori. Memori genap memuat karakter ASCII, sedangkan memori ganjil membawa informasi warna background dan warna teks.
+
+Karena framebuffer bisa direpresentasikan sebagai matriks (array of array), kita bisa menentukan posisi yang kita cari dengan menggunakan
+
+\[
+position = (y\_position * characters\_per\_line) + x\_position;
+\]
+
+Jangan lupakan orang ketiga yaitu aritmatika pointer.
+
+Diambil langsung dari OSDev, untuk coloring kayak gini.
+
+\begin{lstlisting}[basicstyle=\ttfamily, columns=fixed, keepspaces=true]
+Bit 76543210
+    ||||||||
+    |||||^^^-fore colour
+    ||||^----fore colour bright bit
+    |^^^-----back colour
+    ^--------back colour bright bit OR enables blinking Text
+\end{lstlisting}
+
+8 bit upper di atas adalah buat coloringnya (background color dan text color). 8 bit seterusnya adalah ascii character-nya.
+
+Implementasi (might change kalo udah ngerjain bonus):
+
+\begin{lstlisting}[language=c]
+void framebuffer_write(uint8_t row, uint8_t col, char c, uint8_t fg, uint8_t bg) {
+    if (row >= 25 || col >= 80)
+        return;
+    
+    uint32_t offset = ((uint32_t)(row * 80) + col) * 2;
+    FRAMEBUFFER_MEMORY_OFFSET[offset]     = (uint8_t)c;
+    FRAMEBUFFER_MEMORY_OFFSET[offset + 1] = (uint8_t)(((bg & 0x0F) << 4) | (fg & 0x0F));
+}
+\end{lstlisting}
+
+Ada edge case handling in case sudah mencapai limit x dan y dari si framebuffer ini. Offset menghitung basically posisi sel berdasarkan rumus sebelumnya dan dikalikan dua. Alasan dikalikan dua adalah karena tentu ukuran char framebuffer kita 2 bytes (ini bukan aritmetika pointer sih soalnya Bagas akhirnya pake offset which is just regular unsigned 32 bit integer). Terus akses offset awal (+ 1 byte) dan ubah jadi si char input, dilanjutin offset + 1 (another 1 byte) yang digabungkan dengan bitwise or (|). Di sini ada juga 0x0F buat mencegah si bg dan fg each lebih dari 4 bits.
+
+\subsection{framebuffer\_set\_cursor}
+
+Basically set kursor teks ke posisi tertentu. Di sini, harus pake port menggunakan instruksi assembly in/out yang disediain di portio.c (ini dijelasin lagi nanti).
+
+Di text mode, kursor hanyalah daerah kedap-kedip (blinking) yang bisa dimanipulasi di OS.
+
+Implementasi:
+
+\begin{lstlisting}[language=c]
+void framebuffer_set_cursor(uint8_t r, uint8_t c) {
+    uint16_t pos = (uint16_t)((r * 80) + c);
+
+    // Send high byte of cursor position to VGA CRT controller
+    out(CURSOR_PORT_CMD, 0x0E);
+    out(CURSOR_PORT_DATA, (uint8_t)((pos >> 8) & 0xFF));
+
+    // Send low byte of cursor position to VGA CRT controller
+    out(CURSOR_PORT_CMD, 0x0F);
+    out(CURSOR_PORT_DATA, (uint8_t)(pos & 0xFF));
+}
+\end{lstlisting}
+
+Kita menggunakan pos untuk menyatakan posisi kursor dengan penentuan rows dan cols, yaa udah tau lah ya. Kemudian kirim high byte dan low byte dengan metode yang tertulis. Baca sendiri.
+
+\subsection{framebuffer\_clear}
+
+Sesuai namanya, untuk membersihkan framebuffer.
+
+Implementasi:
+
+\begin{lstlisting}[language=c]
+void framebuffer_clear(void) {
+    for (uint8_t row = 0; row < 25; row++) {
+        for (uint8_t col = 0; col < 80; col++) {
+            framebuffer_write(row, col, ' ', 0x07, 0x00);
+        }
+    }
+    framebuffer_set_cursor(0, 0);
+}
+\end{lstlisting}
+
+Mengisi semua rows dan columns dengan elemen kosong ' ', forecolor-nya 0x07 (gray) dan backcolor-nya 0x00 (black). Kursor juga direset ke posisi semula.
+
+\section{Interrupt}
+
+\textit{\textbf{IIIIINTERUPSI ARESSSSSS!}}
+
+Di OS yang kita buat, CPU hanya bisa menjalankan 1 task at a time. Oleh karena itu, perlu interrupt yang memberi semacam notifikasi agar CPU bisa melakukan event lain yang butuh perhatian. Pada bab ini, kita fokus di Hardware Interrupt / Interrupt Request (IRQ) yang sesuai namanya, dibuat oleh hardware, yang dalam konteks ini adalah keyboard. Suffix interrupt dinyatakan dengan "INT xh" dengan x adalah nomornya.
+
+\subsection{Sedikit info}
+
+PIC atau Programmable Interrupt Controller berfungsi mengontrol IRQ dari komponen eksternal. Pada kasus ini, akan dilakukan remapping ulang, karena suatu masalah, yaitu nomor interrupt oleh PIC dengan x86 CPU Exception (Software Interrupt i think) kurleb sama. Jadi diubah dikit biar memudahkan. PIC by default menyalakan IRQ0 (INT 21h) which is timer 
+
+\subsection{interrupt.h}
+
+Ada BANYAK constants, kita ignore aja karena mostly buat PIC remapping. Ada juga CPURegister, yaa menyimpan representasi-representasi register. Ada InterruptStack yang merupakan data yang di-push ke stack ketika ada interrupt/exception. Interrupt frame whichis state CPU sebelum interrupt and also Interrupt Vector (identifier). Harusnya dibahas di chapter lain?
+
+\subsection{interrupt.c}
+
+io\_wait untuk sinkronisasi 1-4 ms port I/O. Semua IRQ yang di-generate oleh PIC kita harus di-ACK (acknowledge?).
+
+pic\_remap untuk remapping PIC-nya. main\_interrupt\_handler sebagai Interrupt Handler atau Interrupt Service Routine (ISR) yang akan dipanggil ketika CPU menerima Interrupt.
+
+activate\_keyboard\_interrupt akan dijelasin di bagian keyboard.
+
+Banyak isinya dan magic semua jadi kita anggap udah baca aja.
+
+\section{Interrupt Descriptor Table}
+
+Disebut juga IDT, basically implementasinya mirip GDT. Jadi naturally ada InterruptDescriptorTable, IDTR, dan yang paling beda IDTGate (technically 11/12 sama GDT dan SegmentDescriptor)
+
+Di IDTGate, ada... baca sendiri. Yaa harusnya ga jauh beda dari SegmentDescriptor.
+
+\subsection{idt.c}
+
+\begin{lstlisting}[language=c]
+void initialize_idt(void) {
+    // TODO : Implement (done)
+    for (int i = 0; i < ISR_STUB_TABLE_LIMIT; i++) {
+        set_interrupt_gate(i, isr_stub_table[i], GDT_KERNEL_CODE_SEGMENT_SELECTOR, 0);
+    }
+    __asm__ volatile("lidt %0" : : "m"(_idt_idtr));
+    __asm__ volatile("sti");
+}
+\end{lstlisting}
+
+Melakukan set\_interrupt\_gate di semua Interrupt Handler di isr\_stub\_table pada segmen kode kernel GDT, dengan privilege 0. Kemudian masukin ke assembly si IDT ini dan diaktifasi dengan Sistem dan Teknologi Informasi.
+
+\begin{lstlisting}[language=c]
+void set_interrupt_gate(
+    uint8_t  int_vector,
+    void     *handler_address,
+    uint16_t gdt_seg_selector,
+    uint8_t  privilege
+) {
+    struct IDTGate *idt_int_gate = &interrupt_descriptor_table.table[int_vector];
+    // TODO : Set handler offset, privilege & segment (done)
+    // 32-bit handler address split into 2 x 16-bit (offset_low & offset_high)
+    idt_int_gate->offset_low  = (uint32_t) handler_address & 0xFFFF;
+    idt_int_gate->offset_high = ((uint32_t) handler_address >> 16) & 0xFFFF;
+    idt_int_gate->segment     = gdt_seg_selector;
+    idt_int_gate->privilege   = privilege;
+    idt_int_gate->_reserved   = 0;
+
+    // Target system 32-bit and flag this as valid interrupt gate
+    idt_int_gate->_r_bit_1    = INTERRUPT_GATE_R_BIT_1;
+    idt_int_gate->_r_bit_2    = INTERRUPT_GATE_R_BIT_2;
+    idt_int_gate->_r_bit_3    = INTERRUPT_GATE_R_BIT_3;
+    idt_int_gate->gate_32     = 1;
+    idt_int_gate->valid_bit   = 1;
+}
+\end{lstlisting}
+
+Basically membuat suatu Interrupt Gate dengan vektor yang sudah ditentukan. offset\_low menyimpan handler\_address, sedangkan offset\_high dilakukan right-shift sebanyak 16 bit. Sisanya menyesuaikan saja
+
+\section{Keyboard}
+
+Keyboard menggunakan IRQ1 (INT 21h). Melanjutkan diskusi terkait activate\_keyboard\_interrupt, fungsinya adalah mengaktivasi interrupt keyboard melalui port. Setelah menyala, setiap kali keyboard ditekan, keyboard akan mengirim IRQ1 ke CPU, masuk main\_interrupt\_handler, lalu memanggilan keyboard\_isr. Kita perlu device driver untuk mengabstraksikan proses dari ngetik keyboard ke tampil di layar. Di sini, kita menggunakan scancode dari keyboard yang nantinya akan di-map ke ASCII.
+
+\subsection{Keyboard ISR}
+
+Interrupt Service Routine-nya keyboard. Basically bagian utama driver keyboard. ISR akan menerima scancode yang dimasukkan oleh keyboard. Jika state keyboard\_state.keyboard\_input\_on bernilai true, ISR melakukan mapping scancode ke ASCII menggunakan tabel keyboard\_scancode\_1\_to\_ascii\_map, lalu menyimpan karakter ASCII ke buffer ke keyboard\_state.keyboard\_buffer.
+
+Implementasi:
+
+\begin{lstlisting}[language=c]
+void keyboard_state_activate(void) {
+    keyboard_state.keyboard_input_on = true;
+}
+
+void keyboard_state_deactivate(void) {
+    keyboard_state.keyboard_input_on = false;
+}
+\end{lstlisting}
+
+Fungsi aktivasi dan deaktivasi ISR keyboard. Apakah interrupt keyboard didengarkan atau tidak.
+
+\begin{lstlisting}[language=c]
+void keyboard_isr(void) {
+    uint8_t scancode = in(KEYBOARD_DATA_PORT);
+
+    if (keyboard_state.keyboard_input_on && scancode < 0x80) {
+        char mapped_char = keyboard_scancode_1_to_ascii_map[scancode];
+        if (mapped_char != 0)
+            keyboard_state.keyboard_buffer = mapped_char;
+    }
+
+    pic_ack(IRQ_KEYBOARD);
+}
+\end{lstlisting}
+
+Sesuai yang dijelaskan, receive interrupt, map char, safe to buffer, also janlup pic\_ack.
+
+\begin{lstlisting}[language=c]
+void get_keyboard_buffer(char *buf) {
+    if (buf != (void *) 0) {
+        *buf = keyboard_state.keyboard_buffer;
+        keyboard_state.keyboard_buffer = 0;
+    }
+} 
+\end{lstlisting}
+
+Mengambil char di keyboard\_state.keyboard\_buffer, lalu di-flush (dihapus). Ini buat nanti pas kita write dari keyboard.
+
+\subsection{Tambahan}
+
+Ketika kita mengetik 1 key, sebenarnya ada dua peristiwa yang terjadi, yaitu make and break. Make Code adalah scancode yang dihasilkan saat kita tepat mengetik, sedangkan Break Code saat kita melepasnya. Di tubes ini, kita memakai scancode set 1 PS/2 yang terima jadi aja. Break Code hanyalah Make Code yang bit teratas-nya dijadikan 1. First half map-nya adalah area untuk Make Code, sedangkan second half-nya untuk Break Code.
+
+Untuk extended key opsional dan sejauh ini belum diimplementasi. Extended key misalnya adalah arrow keys, shift, caps lock, yang saat ini nilainya nol di map kita dan posisinya di first half map-nya yaitu di area Make. Jika ingin diimplementasi, manfaatin keyboard\_state.read\_extended\_mode dan lakukan manipulasi lebih lanjut.
+
+\section{Koordinasi yang Taktis dan Keberanian yang Mumpuni}
+
+Awan Cumulonimbus muncul di langit dan meraung-raung, entah konsekuensi dari pemberontakan kami atau hanya kebetulan saja, melihat kerja keras Sang 4 Raja dalam upaya resureksi Ares serta insurgensi terhadap peradaban ini. Ketika hujan badai dan hail representasi simbolik Zeus turun ke daratan manusia yang mudah hancur, kami menganggap hal tersebut sebagai motivasi lebih lanjut dalam melanjutkan progres kami yang tak akan berhenti sampai dunia ini dihancurkan oleh kebodohan itu sendiri. Dengan hati yang lunak, kami mengisi ketiadaan Ares dengan keberanian yang didasari oleh dimensi struktural yang lebih kuat dari baja dan berlian yang dipertulangkan. "Interupsi, Ares!" menjadi sebuah pemantik yang kami rasa cukup bagi para manusia biasa pada saat mereka ingin berkomunikasi dengan pemimpin baru mereka. Keberanian yang akan mereka rasakan tidak akan sepadan dengan apa yang dirasakan para SPARTANS pada era tersebut, namun, dengan koordinasi yang taktis, kami rasa hal yang Ia nanti-nanti suatu saat akan terbentuk juga. Dunia baru akan terbentuk, dan segala masukan dan keluaran yang muncul dari umat manusia akan menjadi suatu bentuk kontribusi yang nyata dengan visualisasi yang terbukti ketika hati mereka terbentuk sebagai batu yang tak terpecahkan nan pikiran dengan keenceran AIR yang melimpah.
