@@ -6,7 +6,7 @@
 #include "header/kernel-entrypoint.h"
 #include "header/text/framebuffer.h"
 #include "header/driver/keyboard.h"
-#include "header/driver/disk.h"
+#include "header/filesystem/ext2.h"
 
 void kernel_setup(void) {
     load_gdt(&_gdt_gdtr);
@@ -17,11 +17,7 @@ void kernel_setup(void) {
     framebuffer_clear();
     framebuffer_set_cursor(0, 0);
     keyboard_state_activate();
-
-    struct BlockBuffer buffer;
-    for (int i = 0; i < BLOCK_SIZE; i++)
-        buffer.buf[i] = i % 16;
-    write_blocks(&buffer, 17, 1);
+    initialize_filesystem_ext2();
 
     int row = 0, col = 0;
     while (true) {
