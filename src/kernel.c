@@ -6,6 +6,7 @@
 #include "header/kernel-entrypoint.h"
 #include "header/text/framebuffer.h"
 #include "header/driver/keyboard.h"
+#include "header/filesystem/ext2.h"
 
 void kernel_setup(void) {
     load_gdt(&_gdt_gdtr);
@@ -16,6 +17,7 @@ void kernel_setup(void) {
     framebuffer_clear();
     framebuffer_set_cursor(0, 0);
     keyboard_state_activate();
+    initialize_filesystem_ext2();
 
     int row = 0, col = 0;
     while (true) {
