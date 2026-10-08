@@ -306,6 +306,48 @@ void initialize_filesystem_ext2(void);
  */
 bool is_directory_empty(uint32_t inode);
 
+/**
+ * @brief load a directory inode and validate it, used for checking parent_inode on CRUD request
+ * @param node buffer for the loaded inode
+ * @param inode inode number of the directory
+ * @return false if inode is out of range, not allocated in inode bitmap, not a directory, or has no data block
+ */
+bool load_directory_node(struct EXT2Inode *node, uint32_t inode);
+
+/**
+ * @brief search an entry by name inside a directory (compare name_len first, then memcmp)
+ * @param dir_inode inode of the directory, must be valid (see load_directory_node)
+ * @param name entry name, does not need to be null-terminated
+ * @param name_len length of the name
+ * @return inode of the entry, 0 if not found
+ */
+uint32_t find_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_len);
+
+/**
+ * @brief add a new entry to a directory. Entry is placed on the first slot that fits
+ * by splitting rec_len of an existing entry. If every block is full, a new block is allocated
+ * for the directory (direct block only, so a directory can have at most 12 blocks)
+ * Disk effect: directory block, and if it grows also block bitmap & directory inode
+ * @param dir_inode inode of the directory
+ * @param inode inode of the new entry
+ * @param name entry name, does not need to be null-terminated
+ * @param name_len length of the name
+ * @param file_type EXT2_FT_REG_FILE or EXT2_FT_DIR
+ * @return false if directory already has 12 blocks or there is no free block
+ */
+bool add_directory_entry(uint32_t dir_inode, uint32_t inode, const char *name, uint8_t name_len, uint8_t file_type);
+
+/**
+ * @brief remove an entry from a directory, its rec_len is merged into the previous entry
+ * (or inode set to 0 if it is the first entry of a block). Entry . and .. can not be removed
+ * Disk effect: directory block
+ * @param dir_inode inode of the directory
+ * @param name entry name, does not need to be null-terminated
+ * @param name_len length of the name
+ * @return true if entry found and removed
+ */
+bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_len);
+
 
 
 /* =============================== CRUD FUNC ======================================== */
@@ -342,55 +384,92 @@ int8_t delete(struct EXT2DriverRequest request);
 /* =============================== MEMORY ==========================================*/
 
 /**
- * @brief get a free inode from the disk, assuming it is always
- * available
- * @return new inode
+ * NOTE: every helper below writes bitmap / inode table / data block directly to the disk,
+ * but free counters on superblock & bgd table are only updated in memory.
+ * Call commit_metadata() at the end of a CRUD operation.
  */
-uint32_t allocate_node(void); 
+
+/**
+ * @brief get a free inode from inode bitmap (first fit), mark it as used
+ * Disk effect: inode bitmap
+ * @param is_directory true if the inode will be used for a directory (bg_used_dirs_count)
+ * @return new inode, 0 if there is no free inode
+ */
+uint32_t allocate_node(bool is_directory);
 
 /**
  * @brief deallocate node from the disk, will also deallocate its used blocks
- * also all of the blocks of indirect blocks if necessary
+ * also all of the blocks of indirect blocks if necessary. Entry on the parent directory is not removed
+ * Disk effect: block bitmap, inode bitmap, inode table (entry is zeroed)
  * @param inode that needs to be deallocated
  */
 void deallocate_node(uint32_t inode);
 
 /**
  * @brief deallocate node blocks
- * @param locations node->block
- * @param blocks number of blocks
+ * Disk effect: block bitmap
+ * @param loc node->i_block
+ * @param blocks number of data blocks (node->i_blocks)
  */
 void deallocate_blocks(void *loc, uint32_t blocks);
 
 /**
- * @brief deallocate block from the disk
- * @param locations block locations
- * @param blocks number of blocks
- * @param bitmap block bitmap
- * @param depth depth of the block
- * @param last_bgd last bgd that is used
- * @param bgd_loaded whether bgd is loaded or not
- * @return new last bgd
+ * @brief get a free block from block bitmap using first fit, search starts from prefered_bgd
+ * Disk effect: block bitmap
+ * @param prefered_bgd bgd index where the search starts
+ * @return block number, 0 if disk is full
  */
-uint32_t deallocate_block(uint32_t *locations, uint32_t blocks, struct BlockBuffer *bitmap, uint32_t depth, uint32_t *last_bgd, bool bgd_loaded);
+uint32_t allocate_block(uint32_t prefered_bgd);
+
+/**
+ * @brief mark a block as free on block bitmap, block 0 is ignored
+ * Disk effect: block bitmap
+ * @param block block number
+ */
+void deallocate_block(uint32_t block);
 
 /**
  * @brief write node->block in the given node, will allocate
- * at least node->blocks number of blocks, if first 12 item of node-> block
- * is not enough, will use indirect blocks
- * @param ptr the buffer that needs to be written
- * @param node pointer of the node
- * @param preffered_bgd it is located at the node inode bgd
- * 
+ * exactly node->i_blocks data blocks (first fit), if first 12 item of node->i_block
+ * is not enough, will use indirect blocks. Unused pointer will be 0
+ * node->i_size bytes are copied from ptr, the rest of the last block is filled with 0
+ * Node is not synced, call sync_node() after this
+ * Disk effect: block bitmap, data blocks, indirect blocks
+ * @param ptr the buffer that needs to be written, NULL will write zeroed blocks
+ * @param node pointer of the node, i_blocks and i_size must be set
+ * @param prefered_bgd it is located at the node inode bgd
+ * @return false if there is not enough free block (nothing is allocated)
+ *
  * @attention only implement until doubly indirect block, if you want to implement triply indirect block please increase the storage size to at least 256MB
  */
-void allocate_node_blocks(void *ptr, struct EXT2Inode *node, uint32_t prefered_bgd);
+bool allocate_node_blocks(void *ptr, struct EXT2Inode *node, uint32_t prefered_bgd);
+
+/**
+ * @brief read all data of a node in order (direct, then indirect) into ptr
+ * @param ptr destination buffer, size must be at least node->i_size
+ * @param node pointer of the node
+ */
+void read_node_blocks(void *ptr, struct EXT2Inode *node);
+
+/**
+ * @brief load the node from the disk
+ * @param node buffer for the loaded node
+ * @param inode location of the node
+ */
+void load_node(struct EXT2Inode *node, uint32_t inode);
 
 /**
  * @brief update the node to the disk
+ * Disk effect: inode table
  * @param node pointer of node
  * @param inode location of the node
  */
 void sync_node(struct EXT2Inode *node, uint32_t inode);
+
+/**
+ * @brief write superblock (block 1) and bgd table (block 2) from memory to the disk
+ * Disk effect: superblock, bgd table
+ */
+void commit_metadata(void);
 
 #endif
