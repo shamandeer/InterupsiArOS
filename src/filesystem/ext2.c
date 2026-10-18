@@ -494,7 +494,7 @@ uint32_t find_directory_entry(uint32_t dir_inode, const char *name, uint8_t name
         uint32_t offset = 0;
         while (is_entry_in_block(&block, offset)) {
             struct EXT2DirectoryEntry *entry = get_directory_entry(block.buf, offset);
-            if (is_entry_name(entry, name, name_len))
+            if (entry->file_type == EXT2_FT_DIR && is_entry_name(entry, name, name_len))
                 return entry->inode;
             offset += entry->rec_len;
         }
@@ -648,5 +648,34 @@ int8_t read(struct EXT2DriverRequest request) {
     }
     // error code 0 (works)
     read_node_blocks(request.buf, &self);
+    return 0;
+}
+
+int8_t read_directory(struct EXT2DriverRequest *prequest) {
+    // error code -1 (asumsi prequest null atau buf null)
+    if (prequest == NULL || prequest->buf == NULL) return -1;
+    struct EXT2Inode parent;
+    // error code 4 (parent invalid)
+    if (!load_directory_node(&parent, prequest->parent_inode)) {
+        return 4;
+    }
+    uint32_t inode = find_directory_entry(prequest->parent_inode, prequest->name, prequest->name_len);
+    if (inode == 0) {
+        int32_t file_type = get_file_type(prequest->parent_inode, prequest->name, prequest->name_len);
+        // error code 3 (directory not found)
+        if (file_type == -1) {
+            return 3;
+        }
+        // error code 1 (not a file)
+        if (file_type != EXT2_FT_DIR) {
+            return 1;
+        }
+        // error code -1 mungkin unknown filetype
+        if (file_type == EXT2_FT_UNKNOWN) return -1;
+    }
+    // error code 0 (works)
+    struct EXT2Inode self;
+    load_node(&self, inode);
+    read_node_blocks(prequest->buf, &self);
     return 0;
 }
