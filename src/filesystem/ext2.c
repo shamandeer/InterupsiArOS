@@ -615,6 +615,92 @@ bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_l
     return false;
 }
 
+/* [D] WRITE */
+
+// sesuai komentar ext2.h pake buffer size = 0 bukan isfolder (?)
+static bool is_folder_request(const struct EXT2DriverRequest *req) {
+    return req->buffer_size == 0;
+}
+
+// same name AND same file_type (ext2.h allows a file and a folder with the same name)
+static bool is_name_taken(uint32_t parent_inode, const char *name, uint8_t name_len, uint8_t file_type) {
+    struct EXT2Inode dir;
+    struct BlockBuffer block;
+    load_node(&dir, parent_inode);
+    for (uint32_t i = 0; i < dir.i_blocks && i < DIRECT_BLOCKS; i++) {
+        read_blocks(&block, dir.i_block[i], 1);
+        uint32_t offset = 0;
+        while (is_entry_in_block(&block, offset)) {
+            struct EXT2DirectoryEntry *entry = get_directory_entry(block.buf, offset);
+            if (entry->file_type == file_type && is_entry_name(entry, name, name_len))
+                return true;
+            offset += entry->rec_len;
+        }
+    }
+    return false;
+}
+
+// deallocate_node reads i_mode / i_block from disk, so node (if given) is synced first
+static int8_t rollback_write(struct EXT2Inode *node, uint32_t inode) {
+    if (node != NULL)
+        sync_node(node, inode);
+    deallocate_node(inode);
+    commit_metadata();
+    return -1;
+}
+
+int8_t write(struct EXT2DriverRequest *request) {
+    if (request == NULL || request->name == NULL || request->name_len == 0)
+        return -1;
+
+    bool is_folder = is_folder_request(request);
+    if (!is_folder && request->buf == NULL)
+        return -1;
+
+    struct EXT2Inode parent;
+    if (!load_directory_node(&parent, request->parent_inode))
+        return 2;
+
+    // TODO: '/' in name is not rejected yet
+    uint8_t file_type = is_folder ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+    if (is_dot_entry(request->name, request->name_len)
+            || is_name_taken(request->parent_inode, request->name, request->name_len, file_type))
+        return 1;
+
+    uint32_t inode = allocate_node(is_folder);
+    if (inode == 0)
+        return -1;
+    uint32_t bgd = inode_to_bgd(inode);
+
+    struct EXT2Inode node;
+    memset(&node, 0, sizeof(node));
+    if (is_folder) {
+        node.i_block[0] = allocate_block(bgd);
+        if (node.i_block[0] == 0) {
+            node.i_mode = EXT2_S_IFDIR;
+            node.i_blocks = 0;
+            return rollback_write(&node, inode);
+        }
+        init_directory_table(&node, inode, request->parent_inode);
+    } else {
+        node.i_mode = EXT2_S_IFREG;
+        node.i_size = request->buffer_size;
+        // ceil without overflow on buffer_size near UINT32_MAX
+        node.i_blocks = request->buffer_size / BLOCK_SIZE + (request->buffer_size % BLOCK_SIZE != 0);
+        if (!allocate_node_blocks(request->buf, &node, bgd)) {
+            node.i_blocks = 0;
+            return rollback_write(&node, inode);
+        }
+    }
+    sync_node(&node, inode);
+
+    if (!add_directory_entry(request->parent_inode, inode, request->name, request->name_len, file_type))
+        return rollback_write(NULL, inode);
+
+    commit_metadata();
+    return 0;
+}
+
 /* C: Bagian King Aqsha semoga gak terlalu ngeslop */
 
 int8_t read(struct EXT2DriverRequest request) {
