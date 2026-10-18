@@ -502,7 +502,8 @@ uint32_t find_directory_entry(uint32_t dir_inode, const char *name, uint8_t name
     return 0;
 }
 
-uint32_t get_file_type(uint32_t file_inode, const char *name, uint8_t name_len) {
+int32_t get_file_type(uint32_t file_inode, const char *name, uint8_t name_len) {
+    // kalo bisa -1 ga jalan, jadi pastiin dulu ada filenya pake previous check
     struct EXT2Inode inode;
     struct BlockBuffer buf;
     load_node(&inode, file_inode);
@@ -617,35 +618,35 @@ bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_l
 /* C: Bagian King Aqsha semoga gak terlalu ngeslop */
 
 int8_t read(struct EXT2DriverRequest request) {
+    // error code -1 (asumsi buffer null)
+    if (request.buf == NULL) return -1;
     struct EXT2Inode parent;
     // error code 4 (parent invalid)
     if (!load_directory_node(&parent, request.parent_inode)) {
         return 4;
     }
-    // error code 3 (file not found)
     uint32_t inode = find_file_entry(request.parent_inode, request.name, request.name_len);
     if (inode == 0) {
-        return 3;
+        int32_t file_type = get_file_type(request.parent_inode, request.name, request.name_len);
+        // error code 3 (file not found)
+        if (file_type == -1) {
+            return 3;
+        }
+        // error code 1 (not a file)
+        if (file_type == EXT2_FT_DIR || file_type == EXT2_FT_NEXT) {
+            return 1;
+        }
+        // error code -1 mungkin unknown filetype
+        if (file_type == EXT2_FT_UNKNOWN) return -1;
     }
     // error code 1 (not a file)
     struct EXT2Inode self;
     load_node(&self, inode);
-    if (self.i_mode == EXT2_S_IFDIR && get_file_type(request.parent_inode, request.name, request.name_len) == -1) {
-        return 1;
-    }
     // error code 2 (buffer not enough)
     if (request.buffer_size < self.i_size) {
         return 2;
     }
-
-    // error code -1 (otherwise). asumsi saat ini mungkin tipe file yg unknown
-    uint32_t file_type = get_file_type(request.parent_inode, request.name, request.name_len);
-    if (file_type == 0 || file_type == 3 || request.buf == NULL) {
-        return -1;
-    }
-
     // error code 0 (works)
     read_node_blocks(request.buf, &self);
     return 0;
-
 }
