@@ -502,6 +502,42 @@ uint32_t find_directory_entry(uint32_t dir_inode, const char *name, uint8_t name
     return 0;
 }
 
+uint32_t get_file_type(uint32_t file_inode, const char *name, uint8_t name_len) {
+    struct EXT2Inode inode;
+    struct BlockBuffer buf;
+    load_node(&inode, file_inode);
+    for (uint32_t i = 0; i < inode.i_blocks && i < DIRECT_BLOCKS; i++) {
+        read_blocks(&buf, inode.i_block[i], 1);
+        uint32_t offset = 0;
+        while (is_entry_in_block(&buf, offset)) {
+            struct EXT2DirectoryEntry *entry = get_directory_entry(&buf, offset);
+            if (is_entry_name(entry, name, name_len)) {
+                return entry->file_type;
+            }
+            offset += entry->rec_len;
+        }
+    }
+    return -1;
+}
+
+uint32_t find_file_entry(uint32_t file_inode, const char *name, uint8_t name_len) {
+    struct EXT2Inode inode;
+    struct BlockBuffer buf;
+    load_node(&inode, file_inode);
+    for (uint32_t i = 0; i < inode.i_blocks && i < DIRECT_BLOCKS; i++) {
+        read_blocks(&buf, inode.i_block[i], 1);
+        uint32_t offset = 0;
+        while (is_entry_in_block(&buf, offset)) {
+            struct EXT2DirectoryEntry *entry = get_directory_entry(&buf, offset);
+            if (entry->file_type == EXT2_FT_REG_FILE && is_entry_name(entry, name, name_len)) {
+                return entry->inode;
+            }
+            offset += entry->rec_len;
+        }
+    }
+    return 0;
+}
+
 bool add_directory_entry(uint32_t dir_inode, uint32_t inode, const char *name, uint8_t name_len, uint8_t file_type) {
     struct EXT2Inode dir;
     struct BlockBuffer block;
@@ -576,4 +612,40 @@ bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_l
         }
     }
     return false;
+}
+
+/* C: Bagian King Aqsha semoga gak terlalu ngeslop */
+
+int8_t read(struct EXT2DriverRequest request) {
+    struct EXT2Inode parent;
+    // error code 4 (parent invalid)
+    if (!load_directory_node(&parent, request.parent_inode)) {
+        return 4;
+    }
+    // error code 3 (file not found)
+    uint32_t inode = find_file_entry(request.parent_inode, request.name, request.name_len);
+    if (inode == 0) {
+        return 3;
+    }
+    // error code 1 (not a file)
+    struct EXT2Inode self;
+    load_node(&self, inode);
+    if (self.i_mode == EXT2_S_IFDIR && get_file_type(request.parent_inode, request.name, request.name_len) == -1) {
+        return 1;
+    }
+    // error code 2 (buffer not enough)
+    if (request.buffer_size < self.i_size) {
+        return 2;
+    }
+
+    // error code -1 (otherwise). asumsi saat ini mungkin tipe file yg unknown
+    uint32_t file_type = get_file_type(request.parent_inode, request.name, request.name_len);
+    if (file_type == 0 || file_type == 3 || request.buf == NULL) {
+        return -1;
+    }
+
+    // error code 0 (works)
+    read_node_blocks(request.buf, &self);
+    return 0;
+
 }
