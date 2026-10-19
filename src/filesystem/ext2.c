@@ -765,3 +765,37 @@ int8_t read_directory(struct EXT2DriverRequest *prequest) {
     read_node_blocks(prequest->buf, &self);
     return 0;
 }
+
+int8_t delete(struct EXT2DriverRequest request) {
+    struct EXT2Inode parent;
+    // error code 3 (parent invalid)
+    if (!load_directory_node(&parent, request.parent_inode)) {
+        return 3;
+    }
+
+    uint32_t dir_inode = find_directory_entry(request.parent_inode, request.name, request.name_len);
+    uint32_t file_inode = find_file_entry(request.parent_inode, request.name, request.name_len);
+    // error code 1 (not found)
+    if (!dir_inode && !file_inode) {
+        return -1;
+    }
+
+    bool is_directory = dir_inode > 0 ? true : false;
+    if (is_directory) {
+        if (!is_directory_empty(dir_inode)) {
+            return 2;
+        }
+        if (!remove_directory_entry(request.parent_inode, request.name, request.name_len)) {
+            return -1;
+        }
+        deallocate_node(dir_inode);
+    }
+    else {
+        if (!remove_directory_entry(request.parent_inode, request.name, request.name_len)) {
+            return -1;
+        }
+        deallocate_node(file_inode);
+    }
+    commit_metadata();
+    return 0;
+}
