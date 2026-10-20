@@ -587,7 +587,7 @@ bool add_directory_entry(uint32_t dir_inode, uint32_t inode, const char *name, u
     return true;
 }
 
-bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_len) {
+bool remove_directory_entry(uint32_t dir_inode, uint32_t targ_inode, const char *name, uint8_t name_len) {
     if (is_dot_entry(name, name_len))
         return false;
 
@@ -600,7 +600,7 @@ bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_l
         struct EXT2DirectoryEntry *prev = NULL;
         while (is_entry_in_block(&block, offset)) {
             struct EXT2DirectoryEntry *entry = get_directory_entry(block.buf, offset);
-            if (is_entry_name(entry, name, name_len)) {
+            if (entry->inode == targ_inode && (entry, name, name_len)) {
                 if (prev == NULL)
                     entry->inode = 0;
                 else
@@ -785,19 +785,19 @@ int8_t delete(struct EXT2DriverRequest request) {
             return 2;
         }
         // error code -1 asumsi bcs salah nama typesh
-        if (!remove_directory_entry(inode, request.name, request.name_len)) {
+        if (!remove_directory_entry(request.parent_inode, inode, request.name, request.name_len)) {
             return -1;
         }
         deallocate_node(inode);
     }
     else {
-        inode = find_file_entry(inode, request.name, request.name_len);
+        inode = find_file_entry(request.parent_inode, request.name, request.name_len);
         // error code 1 not found inode
         if (!inode) {
             return 1;
         }
         // error code -1 asumsi bcs salah nama typesh
-        if (!remove_directory_entry(inode, request.name, request.name_len)) {
+        if (!remove_directory_entry(request.parent_inode, inode, request.name, request.name_len)) {
             return -1;
         }
         deallocate_node(inode);
