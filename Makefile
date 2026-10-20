@@ -43,6 +43,16 @@ clean:
 disk:
 	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 4M
 
+# host test for ext2 CRUD, fake disk on RAM (no QEMU needed)
+HOST_CC       = cc
+TEST_FOLDER   = tests/host
+TEST_SOURCE   = $(SOURCE_FOLDER)/filesystem/ext2.c $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_ext2.c
+TEST_CFLAGS   = -Wall -Wextra -Werror -std=gnu11 -I$(SOURCE_FOLDER) -Dread=ext2_read -Dwrite=ext2_write -Ddelete=ext2_delete
+test:
+	@mkdir -p $(OUTPUT_FOLDER)
+	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SOURCE) -o $(OUTPUT_FOLDER)/test_ext2
+	@./$(OUTPUT_FOLDER)/test_ext2 .kit/ch2/sample-image.bin
+
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/kernel-entrypoint.s -o $(OUTPUT_FOLDER)/kernel-entrypoint.o
