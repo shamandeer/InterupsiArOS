@@ -17,6 +17,9 @@
 #define BLOCKS_PER_GROUP (DISK_SPACE / BLOCK_SIZE / GROUPS_COUNT) // number of blocks per group
 #define INODES_TABLE_BLOCK_COUNT 16u 
 #define INODES_PER_GROUP (INODES_PER_TABLE * INODES_TABLE_BLOCK_COUNT) // number of inodes per group
+#define ROOT_INODE 2u // inode 1 is reserved, root directory starts at inode 2
+#define DIRECT_BLOCKS 12u // number of direct pointer on i_block
+#define POINTERS_PER_BLOCK (BLOCK_SIZE / sizeof(uint32_t)) // number of block pointer inside an indirect block
 
 
 
@@ -114,10 +117,13 @@ struct EXT2BlockGroupDescriptor
     uint32_t bg_inode_bitmap;
 
     /**
-     * 16bit value indicating the total number of free blocks for the represented group.
+     * 32bit block id of the first block of the “inode table” for the group represented.
      */
     uint32_t bg_inode_table;
 
+    /**
+     * 16bit value indicating the total number of free blocks for the represented group.
+     */
     uint16_t bg_free_blocks_count;
 
     /**
@@ -203,7 +209,9 @@ struct EXT2DirectoryEntry
     uint16_t rec_len; 
 
     /**
-     * 8bit value indicating the length of the file name.
+     * 16bit value indicating the length of the file name.
+     * Real ext2 uses 8bit name_len + 8bit file_type, IF2130 kit (and sample-image.bin) uses 16bit,
+     * so the header is 9 bytes and the name starts at offset 9. Max name length is still 255 (uint8_t on request)
      */
     uint16_t name_len;
 
@@ -255,7 +263,7 @@ uint16_t get_entry_record_len(uint8_t name_len);
 uint32_t get_dir_first_child_offset(void *ptr);
 
 
-/* =================== MAIN FUNCTION OF EXT32 FILESYSTEM ============================*/
+/* =================== MAIN FUNCTION OF EXT2 FILESYSTEM ============================*/
 
 /**
  * @brief get bgd index from inode, inode will starts at index 1
@@ -295,7 +303,9 @@ void create_ext2(void);
 
 /**
  * @brief Initialize file system driver state, if is_empty_storage() then create_ext2()
- * Else, read and cache super block (located at block 1) and bgd table (located at block 2) into state
+ * Else, read and cache super block (located at block 1) and bgd table (located at block 2) into state.
+ * If the superblock is not valid (magic / geometry), the storage is treated as empty and create_ext2() is called.
+ * Free counters on superblock & bgd are recounted from the bitmaps (in memory, written on next commit_metadata())
  */
 void initialize_filesystem_ext2(void);
 
@@ -315,13 +325,31 @@ bool is_directory_empty(uint32_t inode);
 bool load_directory_node(struct EXT2Inode *node, uint32_t inode);
 
 /**
- * @brief search an entry by name inside a directory (compare name_len first, then memcmp)
+ * @brief search a folder entry (file_type EXT2_FT_DIR, including . and ..) by name inside a directory
  * @param dir_inode inode of the directory, must be valid (see load_directory_node)
  * @param name entry name, does not need to be null-terminated
  * @param name_len length of the name
- * @return inode of the entry, 0 if not found
+ * @return inode of the folder, 0 if not found
  */
 uint32_t find_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_len);
+
+/**
+ * @brief search a file entry (file_type EXT2_FT_REG_FILE) by name inside a directory
+ * @param dir_inode inode of the directory, must be valid (see load_directory_node)
+ * @param name entry name, does not need to be null-terminated
+ * @param name_len length of the name
+ * @return inode of the file, 0 if not found
+ */
+uint32_t find_file_entry(uint32_t dir_inode, const char *name, uint8_t name_len);
+
+/**
+ * @brief get file_type of the first entry with the given name, regardless of its type
+ * @param dir_inode inode of the directory, must be valid (see load_directory_node)
+ * @param name entry name, does not need to be null-terminated
+ * @param name_len length of the name
+ * @return EXT2_FT_* value, -1 if there is no entry with that name
+ */
+int32_t get_file_type(uint32_t dir_inode, const char *name, uint8_t name_len);
 
 /**
  * @brief add a new entry to a directory. Entry is placed on the first slot that fits
@@ -339,14 +367,16 @@ bool add_directory_entry(uint32_t dir_inode, uint32_t inode, const char *name, u
 
 /**
  * @brief remove an entry from a directory, its rec_len is merged into the previous entry
- * (or inode set to 0 if it is the first entry of a block). Entry . and .. can not be removed
- * Disk effect: directory block
+ * (or inode set to 0 if it is the first entry of a block). Entry . and .. can not be removed.
+ * If a block other than the first one becomes empty, the block is freed and the directory shrinks
+ * Disk effect: directory block, and if it shrinks also block bitmap & directory inode
  * @param dir_inode inode of the directory
+ * @param target_inode inode of the entry, needed because a file and a folder can have the same name
  * @param name entry name, does not need to be null-terminated
  * @param name_len length of the name
  * @return true if entry found and removed
  */
-bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_len);
+bool remove_directory_entry(uint32_t dir_inode, uint32_t target_inode, const char *name, uint8_t name_len);
 
 
 
@@ -354,8 +384,8 @@ bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_l
 
 /**
  * @brief EXT2 Folder / Directory read
- * @param request buf point to struct EXT2 Directory
- * @return Error code: 0 success - 1 not a folder - 2 not found - 3 parent folder invalid - -1 unknown
+ * @param request buf point to struct EXT2 Directory, buffer_size must be at least the folder i_size (block count * BLOCK_SIZE)
+ * @return Error code: 0 success - 1 not a folder - 2 not found - 3 parent folder invalid - -1 unknown (also buffer not enough)
  */
 int8_t read_directory(struct EXT2DriverRequest *prequest);
 
@@ -370,7 +400,8 @@ int8_t read(struct EXT2DriverRequest request);
  * @brief EXT2 write, write a file or a folder to file system
  *
  * @param All attribute will be used for write except is_dir, buffer_size == 0 then create a folder / directory. It is possible that exist file with name same as a folder
- * @return Error code: 0 success - 1 file/folder already exist - 2 invalid parent folder - -1 unknown
+ * name must not contain '/' or '\0'
+ * @return Error code: 0 success - 1 file/folder already exist - 2 invalid parent folder - -1 unknown (also invalid name)
  */
 int8_t write(struct EXT2DriverRequest *request);
 

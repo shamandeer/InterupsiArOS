@@ -13,12 +13,13 @@ const uint8_t fs_signature[BLOCK_SIZE] = {
     [BLOCK_SIZE-1] = 'k',
 };
 
-#define ROOT_INODE 2u
 #define GROUP0_FIRST_META 3u
 #define GROUP_META_BLOCKS (2u + INODES_TABLE_BLOCK_COUNT)
 
 static struct EXT2Superblock fs_superblock;
 static struct EXT2BlockGroupDescriptorTable fs_group_descriptor_table;
+
+static void recount_free_counters(void);
 
 /* [A] INITIALIZER */
 
@@ -127,7 +128,7 @@ void create_ext2(void) {
     fs_superblock.s_free_blocks_count = total_free_blocks;
     fs_superblock.s_free_inodes_count = INODES_PER_GROUP * GROUPS_COUNT - 2u;
     fs_superblock.s_first_data_block = 1;
-    fs_superblock.s_first_ino = 1;
+    fs_superblock.s_first_ino = ROOT_INODE;
     fs_superblock.s_blocks_per_group = BLOCKS_PER_GROUP;
     fs_superblock.s_frags_per_group = BLOCKS_PER_GROUP;
     fs_superblock.s_inodes_per_group = INODES_PER_GROUP;
@@ -148,22 +149,35 @@ void create_ext2(void) {
     write_blocks(&buffer, table_block, 1);
 }
 
+static bool is_superblock_valid(void) {
+    return fs_superblock.s_magic == EXT2_SUPER_MAGIC
+        && fs_superblock.s_blocks_count == DISK_SPACE / BLOCK_SIZE
+        && fs_superblock.s_inodes_per_group == INODES_PER_GROUP;
+}
+
 void initialize_filesystem_ext2(void) {
     if (is_empty_storage()) {
         create_ext2();
-    } else {
-        struct BlockBuffer buffer;
-        read_blocks(&buffer, 1, 1);
-        memcpy(&fs_superblock, buffer.buf, sizeof(fs_superblock));
-        read_blocks(&buffer, 2, 1);
-        memcpy(&fs_group_descriptor_table, buffer.buf, sizeof(fs_group_descriptor_table));
+        return;
     }
+
+    struct BlockBuffer buffer;
+    read_blocks(&buffer, 1, 1);
+    memcpy(&fs_superblock, buffer.buf, sizeof(fs_superblock));
+    if (!is_superblock_valid()) {
+        create_ext2();
+        return;
+    }
+
+    read_blocks(&buffer, 2, 1);
+    memcpy(&fs_group_descriptor_table, buffer.buf, sizeof(fs_group_descriptor_table));
+    // counters might be stale if the last operation did not reach commit_metadata()
+    recount_free_counters();
 }
 
 /* [B] CORE HELPERS */
 
-#define DIRECT_BLOCKS 12u
-#define POINTERS_PER_BLOCK (BLOCK_SIZE / sizeof(uint32_t))
+// addressable by direct + single + double indirect, the real limit is the free space (count_free_blocks)
 #define MAX_NODE_BLOCKS (DIRECT_BLOCKS + POINTERS_PER_BLOCK + POINTERS_PER_BLOCK * POINTERS_PER_BLOCK)
 
 // position while walking node data blocks (direct -> single -> double indirect)
@@ -216,8 +230,22 @@ static bool is_entry_in_block(struct BlockBuffer *block, uint32_t offset) {
     if (offset + sizeof(struct EXT2DirectoryEntry) > BLOCK_SIZE)
         return false;
 
+    // rec_len must cover the header + name, stay 4-byte aligned, and not cross the block
     struct EXT2DirectoryEntry *entry = get_directory_entry(block->buf, offset);
-    return entry->rec_len != 0 && offset + entry->rec_len <= BLOCK_SIZE;
+    return entry->rec_len >= sizeof(struct EXT2DirectoryEntry) + entry->name_len
+        && entry->rec_len % 4 == 0
+        && offset + entry->rec_len <= BLOCK_SIZE;
+}
+
+static bool is_block_empty(struct BlockBuffer *block) {
+    uint32_t offset = 0;
+    while (is_entry_in_block(block, offset)) {
+        struct EXT2DirectoryEntry *entry = get_directory_entry(block->buf, offset);
+        if (entry->inode != 0)
+            return false;
+        offset += entry->rec_len;
+    }
+    return true;
 }
 
 static bool is_entry_name(struct EXT2DirectoryEntry *entry, const char *name, uint8_t name_len) {
@@ -339,6 +367,32 @@ void deallocate_block(uint32_t block) {
     write_blocks(&bitmap, bgd->bg_block_bitmap, 1);
     bgd->bg_free_blocks_count++;
     fs_superblock.s_free_blocks_count++;
+}
+
+static void recount_free_counters(void) {
+    struct BlockBuffer bitmap;
+    fs_superblock.s_free_blocks_count = 0;
+    fs_superblock.s_free_inodes_count = 0;
+    for (uint32_t g = 0; g < GROUPS_COUNT; g++) {
+        struct EXT2BlockGroupDescriptor *bgd = &fs_group_descriptor_table.table[g];
+        uint16_t free_blocks = 0;
+        uint16_t free_inodes = 0;
+
+        read_blocks(&bitmap, bgd->bg_block_bitmap, 1);
+        for (uint32_t b = 0; b < BLOCKS_PER_GROUP; b++)
+            if (!test_bit(&bitmap, b))
+                free_blocks++;
+
+        read_blocks(&bitmap, bgd->bg_inode_bitmap, 1);
+        for (uint32_t local = 0; local < INODES_PER_GROUP; local++)
+            if (!test_bit(&bitmap, local))
+                free_inodes++;
+
+        bgd->bg_free_blocks_count = free_blocks;
+        bgd->bg_free_inodes_count = free_inodes;
+        fs_superblock.s_free_blocks_count += free_blocks;
+        fs_superblock.s_free_inodes_count += free_inodes;
+    }
 }
 
 // counted from the bitmap, free counter on bgd could be out of sync with the bitmap
@@ -502,16 +556,16 @@ uint32_t find_directory_entry(uint32_t dir_inode, const char *name, uint8_t name
     return 0;
 }
 
-int32_t get_file_type(uint32_t file_inode, const char *name, uint8_t name_len) {
+int32_t get_file_type(uint32_t dir_inode, const char *name, uint8_t name_len) {
     // kalo bisa -1 ga jalan, jadi pastiin dulu ada filenya pake previous check
     struct EXT2Inode inode;
     struct BlockBuffer buf;
-    load_node(&inode, file_inode);
+    load_node(&inode, dir_inode);
     for (uint32_t i = 0; i < inode.i_blocks && i < DIRECT_BLOCKS; i++) {
         read_blocks(&buf, inode.i_block[i], 1);
         uint32_t offset = 0;
         while (is_entry_in_block(&buf, offset)) {
-            struct EXT2DirectoryEntry *entry = get_directory_entry(&buf, offset);
+            struct EXT2DirectoryEntry *entry = get_directory_entry(buf.buf, offset);
             if (is_entry_name(entry, name, name_len)) {
                 return entry->file_type;
             }
@@ -521,15 +575,15 @@ int32_t get_file_type(uint32_t file_inode, const char *name, uint8_t name_len) {
     return -1;
 }
 
-uint32_t find_file_entry(uint32_t file_inode, const char *name, uint8_t name_len) {
+uint32_t find_file_entry(uint32_t dir_inode, const char *name, uint8_t name_len) {
     struct EXT2Inode inode;
     struct BlockBuffer buf;
-    load_node(&inode, file_inode);
+    load_node(&inode, dir_inode);
     for (uint32_t i = 0; i < inode.i_blocks && i < DIRECT_BLOCKS; i++) {
         read_blocks(&buf, inode.i_block[i], 1);
         uint32_t offset = 0;
         while (is_entry_in_block(&buf, offset)) {
-            struct EXT2DirectoryEntry *entry = get_directory_entry(&buf, offset);
+            struct EXT2DirectoryEntry *entry = get_directory_entry(buf.buf, offset);
             if (entry->file_type == EXT2_FT_REG_FILE && is_entry_name(entry, name, name_len)) {
                 return entry->inode;
             }
@@ -587,7 +641,18 @@ bool add_directory_entry(uint32_t dir_inode, uint32_t inode, const char *name, u
     return true;
 }
 
-bool remove_directory_entry(uint32_t dir_inode, uint32_t targ_inode, const char *name, uint8_t name_len) {
+// free directory block at index, the last block takes its slot (entry order does not matter)
+static void shrink_directory(struct EXT2Inode *dir, uint32_t dir_inode, uint32_t index) {
+    uint32_t last = dir->i_blocks - 1;
+    deallocate_block(dir->i_block[index]);
+    dir->i_block[index] = dir->i_block[last];
+    dir->i_block[last] = 0;
+    dir->i_blocks--;
+    dir->i_size -= BLOCK_SIZE;
+    sync_node(dir, dir_inode);
+}
+
+bool remove_directory_entry(uint32_t dir_inode, uint32_t target_inode, const char *name, uint8_t name_len) {
     if (is_dot_entry(name, name_len))
         return false;
 
@@ -600,12 +665,15 @@ bool remove_directory_entry(uint32_t dir_inode, uint32_t targ_inode, const char 
         struct EXT2DirectoryEntry *prev = NULL;
         while (is_entry_in_block(&block, offset)) {
             struct EXT2DirectoryEntry *entry = get_directory_entry(block.buf, offset);
-            if (entry->inode == targ_inode && (entry, name, name_len)) {
+            if (entry->inode == target_inode && is_entry_name(entry, name, name_len)) {
                 if (prev == NULL)
                     entry->inode = 0;
                 else
                     prev->rec_len += entry->rec_len;
                 write_blocks(&block, dir.i_block[i], 1);
+                // first block always keeps . and ..
+                if (i != 0 && is_block_empty(&block))
+                    shrink_directory(&dir, dir_inode, i);
                 return true;
             }
             prev = entry;
@@ -640,6 +708,14 @@ static bool is_name_taken(uint32_t parent_inode, const char *name, uint8_t name_
     return false;
 }
 
+// '/' is the path separator on shell, '\0' would cut the name on C string
+static bool has_invalid_char(const char *name, uint8_t name_len) {
+    for (uint8_t i = 0; i < name_len; i++)
+        if (name[i] == '/' || name[i] == '\0')
+            return true;
+    return false;
+}
+
 // deallocate_node reads i_mode / i_block from disk, so node (if given) is synced first
 static int8_t rollback_write(struct EXT2Inode *node, uint32_t inode) {
     if (node != NULL)
@@ -650,7 +726,8 @@ static int8_t rollback_write(struct EXT2Inode *node, uint32_t inode) {
 }
 
 int8_t write(struct EXT2DriverRequest *request) {
-    if (request == NULL || request->name == NULL || request->name_len == 0)
+    if (request == NULL || request->name == NULL || request->name_len == 0
+            || has_invalid_char(request->name, request->name_len))
         return -1;
 
     bool is_folder = is_folder_request(request);
@@ -661,7 +738,6 @@ int8_t write(struct EXT2DriverRequest *request) {
     if (!load_directory_node(&parent, request->parent_inode))
         return 2;
 
-    // TODO: '/' in name is not rejected yet
     uint8_t file_type = is_folder ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
     if (is_dot_entry(request->name, request->name_len)
             || is_name_taken(request->parent_inode, request->name, request->name_len, file_type))
@@ -704,8 +780,8 @@ int8_t write(struct EXT2DriverRequest *request) {
 /* C: Bagian King Aqsha semoga gak terlalu ngeslop */
 
 int8_t read(struct EXT2DriverRequest request) {
-    // error code -1 (asumsi buffer null)
-    if (request.buf == NULL) return -1;
+    // error code -1 (asumsi buffer atau nama null)
+    if (request.buf == NULL || request.name == NULL || request.name_len == 0) return -1;
     struct EXT2Inode parent;
     // error code 4 (parent invalid)
     if (!load_directory_node(&parent, request.parent_inode)) {
@@ -722,10 +798,9 @@ int8_t read(struct EXT2DriverRequest request) {
         if (file_type == EXT2_FT_DIR || file_type == EXT2_FT_NEXT) {
             return 1;
         }
-        // error code -1 mungkin unknown filetype
-        if (file_type == EXT2_FT_UNKNOWN) return -1;
+        // error code -1 unknown filetype, jangan lanjut ke load_node(0)
+        return -1;
     }
-    // error code 1 (not a file)
     struct EXT2Inode self;
     load_node(&self, inode);
     // error code 2 (buffer not enough)
@@ -738,8 +813,8 @@ int8_t read(struct EXT2DriverRequest request) {
 }
 
 int8_t read_directory(struct EXT2DriverRequest *prequest) {
-    // error code -1 (asumsi prequest null atau buf null)
-    if (prequest == NULL || prequest->buf == NULL) return -1;
+    // error code -1 (asumsi prequest, buf, atau nama null)
+    if (prequest == NULL || prequest->buf == NULL || prequest->name == NULL || prequest->name_len == 0) return -1;
     struct EXT2Inode parent;
     // error code 3 (parent invalid)
     if (!load_directory_node(&parent, prequest->parent_inode)) {
@@ -756,17 +831,23 @@ int8_t read_directory(struct EXT2DriverRequest *prequest) {
         if (file_type == EXT2_FT_REG_FILE) {
             return 1;
         }
-        // error code -1 mungkin unknown filetype atau tipe yang lain
-        if (file_type == EXT2_FT_UNKNOWN || file_type == EXT2_FT_NEXT) return -1;
+        // error code -1 unknown filetype atau tipe yang lain, jangan lanjut ke load_node(0)
+        return -1;
     }
-    // error code 0 (works)
     struct EXT2Inode self;
     load_node(&self, inode);
+    // error code -1 (buffer tidak cukup untuk seluruh isi folder)
+    if (prequest->buffer_size < self.i_size) {
+        return -1;
+    }
+    // error code 0 (works)
     read_node_blocks(prequest->buf, &self);
     return 0;
 }
 
 int8_t delete(struct EXT2DriverRequest request) {
+    // error code -1 (asumsi nama null)
+    if (request.name == NULL || request.name_len == 0) return -1;
     struct EXT2Inode parent;
     // error code 3 (parent invalid)
     if (!load_directory_node(&parent, request.parent_inode)) {
@@ -780,7 +861,7 @@ int8_t delete(struct EXT2DriverRequest request) {
         if (!inode) {
             return 1;
         }
-        // error code 2 directory empty
+        // error code 2 directory not empty
         if (!is_directory_empty(inode)) {
             return 2;
         }
