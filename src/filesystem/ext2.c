@@ -494,8 +494,45 @@ uint32_t find_directory_entry(uint32_t dir_inode, const char *name, uint8_t name
         uint32_t offset = 0;
         while (is_entry_in_block(&block, offset)) {
             struct EXT2DirectoryEntry *entry = get_directory_entry(block.buf, offset);
-            if (is_entry_name(entry, name, name_len))
+            if (entry->file_type == EXT2_FT_DIR && is_entry_name(entry, name, name_len))
                 return entry->inode;
+            offset += entry->rec_len;
+        }
+    }
+    return 0;
+}
+
+int32_t get_file_type(uint32_t file_inode, const char *name, uint8_t name_len) {
+    // kalo bisa -1 ga jalan, jadi pastiin dulu ada filenya pake previous check
+    struct EXT2Inode inode;
+    struct BlockBuffer buf;
+    load_node(&inode, file_inode);
+    for (uint32_t i = 0; i < inode.i_blocks && i < DIRECT_BLOCKS; i++) {
+        read_blocks(&buf, inode.i_block[i], 1);
+        uint32_t offset = 0;
+        while (is_entry_in_block(&buf, offset)) {
+            struct EXT2DirectoryEntry *entry = get_directory_entry(&buf, offset);
+            if (is_entry_name(entry, name, name_len)) {
+                return entry->file_type;
+            }
+            offset += entry->rec_len;
+        }
+    }
+    return -1;
+}
+
+uint32_t find_file_entry(uint32_t file_inode, const char *name, uint8_t name_len) {
+    struct EXT2Inode inode;
+    struct BlockBuffer buf;
+    load_node(&inode, file_inode);
+    for (uint32_t i = 0; i < inode.i_blocks && i < DIRECT_BLOCKS; i++) {
+        read_blocks(&buf, inode.i_block[i], 1);
+        uint32_t offset = 0;
+        while (is_entry_in_block(&buf, offset)) {
+            struct EXT2DirectoryEntry *entry = get_directory_entry(&buf, offset);
+            if (entry->file_type == EXT2_FT_REG_FILE && is_entry_name(entry, name, name_len)) {
+                return entry->inode;
+            }
             offset += entry->rec_len;
         }
     }
@@ -576,4 +613,189 @@ bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_l
         }
     }
     return false;
+}
+
+/* [D] WRITE */
+
+// sesuai komentar ext2.h pake buffer size = 0 bukan isfolder (?)
+static bool is_folder_request(const struct EXT2DriverRequest *req) {
+    return req->buffer_size == 0;
+}
+
+// same name AND same file_type (ext2.h allows a file and a folder with the same name)
+static bool is_name_taken(uint32_t parent_inode, const char *name, uint8_t name_len, uint8_t file_type) {
+    struct EXT2Inode dir;
+    struct BlockBuffer block;
+    load_node(&dir, parent_inode);
+    for (uint32_t i = 0; i < dir.i_blocks && i < DIRECT_BLOCKS; i++) {
+        read_blocks(&block, dir.i_block[i], 1);
+        uint32_t offset = 0;
+        while (is_entry_in_block(&block, offset)) {
+            struct EXT2DirectoryEntry *entry = get_directory_entry(block.buf, offset);
+            if (entry->file_type == file_type && is_entry_name(entry, name, name_len))
+                return true;
+            offset += entry->rec_len;
+        }
+    }
+    return false;
+}
+
+// deallocate_node reads i_mode / i_block from disk, so node (if given) is synced first
+static int8_t rollback_write(struct EXT2Inode *node, uint32_t inode) {
+    if (node != NULL)
+        sync_node(node, inode);
+    deallocate_node(inode);
+    commit_metadata();
+    return -1;
+}
+
+int8_t write(struct EXT2DriverRequest *request) {
+    if (request == NULL || request->name == NULL || request->name_len == 0)
+        return -1;
+
+    bool is_folder = is_folder_request(request);
+    if (!is_folder && request->buf == NULL)
+        return -1;
+
+    struct EXT2Inode parent;
+    if (!load_directory_node(&parent, request->parent_inode))
+        return 2;
+
+    // TODO: '/' in name is not rejected yet
+    uint8_t file_type = is_folder ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+    if (is_dot_entry(request->name, request->name_len)
+            || is_name_taken(request->parent_inode, request->name, request->name_len, file_type))
+        return 1;
+
+    uint32_t inode = allocate_node(is_folder);
+    if (inode == 0)
+        return -1;
+    uint32_t bgd = inode_to_bgd(inode);
+
+    struct EXT2Inode node;
+    memset(&node, 0, sizeof(node));
+    if (is_folder) {
+        node.i_block[0] = allocate_block(bgd);
+        if (node.i_block[0] == 0) {
+            node.i_mode = EXT2_S_IFDIR;
+            node.i_blocks = 0;
+            return rollback_write(&node, inode);
+        }
+        init_directory_table(&node, inode, request->parent_inode);
+    } else {
+        node.i_mode = EXT2_S_IFREG;
+        node.i_size = request->buffer_size;
+        // ceil without overflow on buffer_size near UINT32_MAX
+        node.i_blocks = request->buffer_size / BLOCK_SIZE + (request->buffer_size % BLOCK_SIZE != 0);
+        if (!allocate_node_blocks(request->buf, &node, bgd)) {
+            node.i_blocks = 0;
+            return rollback_write(&node, inode);
+        }
+    }
+    sync_node(&node, inode);
+
+    if (!add_directory_entry(request->parent_inode, inode, request->name, request->name_len, file_type))
+        return rollback_write(NULL, inode);
+
+    commit_metadata();
+    return 0;
+}
+
+/* C: Bagian King Aqsha semoga gak terlalu ngeslop */
+
+int8_t read(struct EXT2DriverRequest request) {
+    // error code -1 (asumsi buffer null)
+    if (request.buf == NULL) return -1;
+    struct EXT2Inode parent;
+    // error code 4 (parent invalid)
+    if (!load_directory_node(&parent, request.parent_inode)) {
+        return 4;
+    }
+    uint32_t inode = find_file_entry(request.parent_inode, request.name, request.name_len);
+    if (inode == 0) {
+        int32_t file_type = get_file_type(request.parent_inode, request.name, request.name_len);
+        // error code 3 (file not found)
+        if (file_type == -1) {
+            return 3;
+        }
+        // error code 1 (not a file)
+        if (file_type == EXT2_FT_DIR || file_type == EXT2_FT_NEXT) {
+            return 1;
+        }
+        // error code -1 mungkin unknown filetype
+        if (file_type == EXT2_FT_UNKNOWN) return -1;
+    }
+    // error code 1 (not a file)
+    struct EXT2Inode self;
+    load_node(&self, inode);
+    // error code 2 (buffer not enough)
+    if (request.buffer_size < self.i_size) {
+        return 2;
+    }
+    // error code 0 (works)
+    read_node_blocks(request.buf, &self);
+    return 0;
+}
+
+int8_t read_directory(struct EXT2DriverRequest *prequest) {
+    // error code -1 (asumsi prequest null atau buf null)
+    if (prequest == NULL || prequest->buf == NULL) return -1;
+    struct EXT2Inode parent;
+    // error code 4 (parent invalid)
+    if (!load_directory_node(&parent, prequest->parent_inode)) {
+        return 4;
+    }
+    uint32_t inode = find_directory_entry(prequest->parent_inode, prequest->name, prequest->name_len);
+    if (inode == 0) {
+        int32_t file_type = get_file_type(prequest->parent_inode, prequest->name, prequest->name_len);
+        // error code 3 (directory not found)
+        if (file_type == -1) {
+            return 3;
+        }
+        // error code 1 (not a file)
+        if (file_type != EXT2_FT_DIR) {
+            return 1;
+        }
+        // error code -1 mungkin unknown filetype
+        if (file_type == EXT2_FT_UNKNOWN) return -1;
+    }
+    // error code 0 (works)
+    struct EXT2Inode self;
+    load_node(&self, inode);
+    read_node_blocks(prequest->buf, &self);
+    return 0;
+}
+
+int8_t delete(struct EXT2DriverRequest request) {
+    struct EXT2Inode parent;
+    // error code 3 (parent invalid)
+    if (!load_directory_node(&parent, request.parent_inode)) {
+        return 3;
+    }
+
+    uint32_t dir_inode = find_directory_entry(request.parent_inode, request.name, request.name_len);
+    uint32_t file_inode = find_file_entry(request.parent_inode, request.name, request.name_len);
+    // error code 1 (not found)
+    if (!dir_inode && !file_inode) {
+        return -1;
+    }
+
+    bool is_directory = dir_inode > 0 ? true : false;
+    if (is_directory) {
+        if (!is_directory_empty(dir_inode)) {
+            return 2;
+        }
+        if (!remove_directory_entry(request.parent_inode, request.name, request.name_len)) {
+            return -1;
+        }
+        deallocate_node(dir_inode);
+    }
+    else {
+        if (!remove_directory_entry(request.parent_inode, request.name, request.name_len)) {
+            return -1;
+        }
+        deallocate_node(file_inode);
+    }
+    commit_metadata();
+    return 0;
 }
