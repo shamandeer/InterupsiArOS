@@ -587,7 +587,7 @@ bool add_directory_entry(uint32_t dir_inode, uint32_t inode, const char *name, u
     return true;
 }
 
-bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_len) {
+bool remove_directory_entry(uint32_t dir_inode, uint32_t targ_inode, const char *name, uint8_t name_len) {
     if (is_dot_entry(name, name_len))
         return false;
 
@@ -600,7 +600,7 @@ bool remove_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_l
         struct EXT2DirectoryEntry *prev = NULL;
         while (is_entry_in_block(&block, offset)) {
             struct EXT2DirectoryEntry *entry = get_directory_entry(block.buf, offset);
-            if (is_entry_name(entry, name, name_len)) {
+            if (entry->inode == targ_inode && (entry, name, name_len)) {
                 if (prev == NULL)
                     entry->inode = 0;
                 else
@@ -741,23 +741,23 @@ int8_t read_directory(struct EXT2DriverRequest *prequest) {
     // error code -1 (asumsi prequest null atau buf null)
     if (prequest == NULL || prequest->buf == NULL) return -1;
     struct EXT2Inode parent;
-    // error code 4 (parent invalid)
+    // error code 3 (parent invalid)
     if (!load_directory_node(&parent, prequest->parent_inode)) {
-        return 4;
+        return 3;
     }
     uint32_t inode = find_directory_entry(prequest->parent_inode, prequest->name, prequest->name_len);
     if (inode == 0) {
         int32_t file_type = get_file_type(prequest->parent_inode, prequest->name, prequest->name_len);
-        // error code 3 (directory not found)
+        // error code 2 (directory not found)
         if (file_type == -1) {
-            return 3;
+            return 2;
         }
-        // error code 1 (not a file)
-        if (file_type != EXT2_FT_DIR) {
+        // error code 1 (not a folder)
+        if (file_type == EXT2_FT_REG_FILE) {
             return 1;
         }
-        // error code -1 mungkin unknown filetype
-        if (file_type == EXT2_FT_UNKNOWN) return -1;
+        // error code -1 mungkin unknown filetype atau tipe yang lain
+        if (file_type == EXT2_FT_UNKNOWN || file_type == EXT2_FT_NEXT) return -1;
     }
     // error code 0 (works)
     struct EXT2Inode self;
@@ -773,28 +773,34 @@ int8_t delete(struct EXT2DriverRequest request) {
         return 3;
     }
 
-    uint32_t dir_inode = find_directory_entry(request.parent_inode, request.name, request.name_len);
-    uint32_t file_inode = find_file_entry(request.parent_inode, request.name, request.name_len);
-    // error code 1 (not found)
-    if (!dir_inode && !file_inode) {
-        return -1;
-    }
-
-    bool is_directory = dir_inode > 0 ? true : false;
-    if (is_directory) {
-        if (!is_directory_empty(dir_inode)) {
+    uint32_t inode;
+    if (request.is_directory) {
+        inode = find_directory_entry(request.parent_inode, request.name, request.name_len);
+        // error code 1 not found inode
+        if (!inode) {
+            return 1;
+        }
+        // error code 2 directory empty
+        if (!is_directory_empty(inode)) {
             return 2;
         }
-        if (!remove_directory_entry(request.parent_inode, request.name, request.name_len)) {
+        // error code -1 asumsi bcs salah nama typesh
+        if (!remove_directory_entry(request.parent_inode, inode, request.name, request.name_len)) {
             return -1;
         }
-        deallocate_node(dir_inode);
+        deallocate_node(inode);
     }
     else {
-        if (!remove_directory_entry(request.parent_inode, request.name, request.name_len)) {
+        inode = find_file_entry(request.parent_inode, request.name, request.name_len);
+        // error code 1 not found inode
+        if (!inode) {
+            return 1;
+        }
+        // error code -1 asumsi bcs salah nama typesh
+        if (!remove_directory_entry(request.parent_inode, inode, request.name, request.name_len)) {
             return -1;
         }
-        deallocate_node(file_inode);
+        deallocate_node(inode);
     }
     commit_metadata();
     return 0;
