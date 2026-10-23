@@ -30,28 +30,50 @@ extern struct PageTable _paging_kernel_page_table;
 
 /**
  * Page Directory Entry Flag, only first 8 bit
- * @param present_bit        Indicate whether this entry is exist or not.
- * @param write_bit          Indicate whether this page is writable
- * ... 
- * @param use_pagesize_4_mb Indicate whether this entry use 4 MB page size (set false) 
+ * @param present_bit        Indicate whether this entry is exist or not. If the bit is set, the page is actually in physical memory at the moment. When a page is swapped out, it is not in the physical memory.
+ * @param write_bit          Indicate whether this page is writable. If the bit is set, the page is read/write. Otherwise when it is not set, the page is read-only. Should be same as table.
+ * @param user_bit           Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
+ * @param wt_bit             Indicate write-through abilities of the page. If the bit is set, write-through caching is enabled. If not, then write-back is enabled instead.
+ * @param cd_bit             Indicate if cache is disabled. If the bit is set, the page will not be cached. Otherwise, it will be.
+ * @param access_bit         Indicate whether a PDE or PTE was read during virtual address translation. If it has, then the bit is set, otherwise, it is not.
+ * @param dirty_bit          Indicate whether a page has been written to.
+ * @param use_pagesize_4_mb  Indicate whether this entry use 4 MB page size (set false).
  * References: Intel Manual 3a - Ch 4 Paging - Figure 4-4 PDE: 4KB page
  */
 struct PageDirectoryEntryFlag {
     uint32_t present_bit        : 1;
-    // TODO : Continue. Note: Only 8-bit flags 
+    uint32_t write_bit          : 1;
+    uint32_t user_bit           : 1;
+    uint32_t wt_bit             : 1;
+    uint32_t cd_bit             : 1;
+    uint32_t access_bit         : 1;
+    uint32_t dirty_bit          : 1;
+    uint32_t use_pagesize_4_mb  : 1; // always set this as false because we want to use 4KiB page size instead
+    // TODO (DONE) : Continue. Note: Only 8-bit flags 
 } __attribute__((packed));
 
 /**
  * Page Directory Entry Flag, only first 8 bit
  * @param present_bit        Indicate whether this entry is exist or not.
  * @param write_bit          Indicate whether this page is writable
- * ... 
+ * @param user_bit           Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
+ * @param wt_bit             Indicate write-through abilities of the page. If the bit is set, write-through caching is enabled. If not, then write-back is enabled instead.
+ * @param cd_bit             Indicate if cache is disabled. If the bit is set, the page will not be cached. Otherwise, it will be.
+ * @param access_bit         Indicate whether a PDE or PTE was read during virtual address translation. If it has, then the bit is set, otherwise, it is not.
+ * @param dirty_bit          Indicate whether a page has been written to.
  * @param use_pagesize_4_mb Indicate whether this entry use 4 MB page size (set false) 
  * References: Intel Manual 3a - Ch 4 Paging - Figure 4-4 PDE: 4KB page
  */
 struct PageTableEntryFlag {
     uint32_t present_bit        : 1;
-    // TODO : Continue. Note: Only 8-bit flags 
+    uint32_t write_bit          : 1;
+    uint32_t user_bit           : 1;
+    uint32_t wt_bit             : 1;
+    uint32_t cd_bit             : 1;
+    uint32_t access_bit         : 1;
+    uint32_t dirty_bit          : 1;
+    uint32_t use_pagesize_4_mb  : 1; // always set this as false because we want to use 4KiB page size instead
+    // TODO (DONE) : Continue. Note: Only 8-bit flags 
 } __attribute__((packed));
 
 /**
@@ -63,14 +85,19 @@ struct PageTableEntryFlag {
  * @param global_page     G flag
  * @param ignored         Ignored bit (3-bit)
  * @param page_attr_table Page Attribute Table bit
- * higher_address         Bits 39:32 of address (8-bit)
+ * @param higher_address  Bits 39:32 of address (8-bit)
  * @param reserved        Reserved bit (1-bit)
  * @param lower_address   Bits 31:22 of address (10-bit) act as pageTable index
  */
 struct PageDirectoryEntry {
     struct PageDirectoryEntryFlag flag;
     uint16_t global_page      : 1;
-    // TODO : Continue, Use uint16_t + bitfield here, Do not use uint8_t
+    uint16_t ignored          : 3;
+    uint16_t page_attr_table  : 1;
+    uint16_t higher_address   : 8;
+    uint16_t reserved         : 1;
+    uint16_t lower_address    : 10;
+    // TODO (DONE) : Continue, Use uint16_t + bitfield here, Do not use uint8_t
 }__attribute__((packed));
 
 /**
@@ -78,18 +105,23 @@ struct PageDirectoryEntry {
  * can also be used as Page Table Entry
  * References: Intel Manual 3a - Ch 4 Paging - Figure 4-4 PDE: 4KB page
  *
- * @param flag            Contain 8-bit page directory entry flag
+ * @param flag            Contain 8-bit page table entry flag
  * @param global_page     G flag
  * @param ignored         Ignored bit (3-bit)
  * @param page_attr_table Page Attribute Table bit
- * higher_address         Bits 39:32 of address (8-bit)
+ * @param higher_address  Bits 39:32 of address (8-bit)
  * @param reserved        Reserved bit (1-bit)
  * @param lower_address   Bits 31:22 of address (10-bit) act as frame index
  */
 struct PageTableEntry {
     struct PageTableEntryFlag flag;
     uint16_t global_page      : 1;
-    // TODO : Continue, Use uint16_t + bitfield here, Do not use uint8_t
+    uint16_t ignored          : 3;
+    uint16_t page_attr_table  : 1;
+    uint16_t higher_address   : 8;
+    uint16_t reserved         : 1;
+    uint16_t lower_address    : 10;
+    // TODO (DONE) : Continue, Use uint16_t + bitfield here, Do not use uint8_t
 }__attribute__((packed));
 /**
  * Page Directory, contain array of PageDirectoryEntry.
@@ -102,14 +134,16 @@ struct PageTableEntry {
  * @param table Fixed-width array of PageDirectoryEntry with size PAGE_ENTRY_COUNT
  */
 struct PageDirectory {
+    volatile struct PageDirectoryEntry table[PAGE_ENTRY_COUNT];
     // TODO : Implement
-}__attribute__((packed));
+}__attribute__((packed, aligned(0x1000)));
 
 /**
  *  Page Table, contain array of PageTableEntry
  */
 struct PageTable {
-    // TODO : Implement
+    volatile struct PageTableEntry table[PAGE_ENTRY_COUNT]
+    // TODO (DONE) : Implement
 }__attribute__((packed));
 
 /**
