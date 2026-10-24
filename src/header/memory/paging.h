@@ -32,7 +32,7 @@ extern struct PageTable _paging_kernel_page_table;
  * Page Directory Entry Flag, only first 8 bit
  * @param present_bit        Indicate whether this entry is exist or not. If the bit is set, the page is actually in physical memory at the moment. When a page is swapped out, it is not in the physical memory.
  * @param write_bit          Indicate whether this page is writable. If the bit is set, the page is read/write. Otherwise when it is not set, the page is read-only. Should be same as table.
- * @param user_bit           Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
+ * @param us_bit           Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
  * @param wt_bit             Indicate write-through abilities of the page. If the bit is set, write-through caching is enabled. If not, then write-back is enabled instead.
  * @param cd_bit             Indicate if cache is disabled. If the bit is set, the page will not be cached. Otherwise, it will be.
  * @param access_bit         Indicate whether a PDE or PTE was read during virtual address translation. If it has, then the bit is set, otherwise, it is not.
@@ -56,7 +56,7 @@ struct PageDirectoryEntryFlag {
  * Page Directory Entry Flag, only first 8 bit
  * @param present_bit        Indicate whether this entry is exist or not.
  * @param write_bit          Indicate whether this page is writable
- * @param user_bit           Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
+ * @param us_bit           Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
  * @param wt_bit             Indicate write-through abilities of the page. If the bit is set, write-through caching is enabled. If not, then write-back is enabled instead.
  * @param cd_bit             Indicate if cache is disabled. If the bit is set, the page will not be cached. Otherwise, it will be.
  * @param access_bit         Indicate whether a PDE or PTE was read during virtual address translation. If it has, then the bit is set, otherwise, it is not.
@@ -135,7 +135,7 @@ struct PageTableEntry {
  */
 struct PageDirectory {
     volatile struct PageDirectoryEntry table[PAGE_ENTRY_COUNT];
-    // TODO : Implement
+    // TODO (DONE) : Implement
 }__attribute__((packed, aligned(0x1000)));
 
 /**
@@ -185,7 +185,7 @@ void update_page_directory_entry(
  * @param virtual_addr  Virtual address to map
  * @param flag          Page table entry flags
  */
-void update_table_directory_entry(
+void update_page_table_entry(
     struct PageDirectory *page_dir,
     void *physical_addr, 
     void *virtual_addr, 
