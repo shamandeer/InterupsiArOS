@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "header/memory/paging.h"
+#include "header/stdlib/string.h"
 
 /**
  * _paging_kernel_page_directory and _paging_kernel_page_table is initialized on kernel-entrypoint.s
@@ -24,9 +25,9 @@ struct PageManagerState page_manager_state = {
 struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index) {
     //this helper function is given from kit but you can always modified it if you think theres a bug (spoiler alert) or you think theres a better approach
 
-    if (page_directory_index == RECURSIVE_PAGE_DIRECTORY_INDEX || page_dir != paging_get_current_page_directory_addr()) return NULL;
+    if (page_directory_index == RECURSIVE_PAGE_DIRECTORY_INDEX || memcmp(page_dir, paging_get_current_page_directory_addr(), sizeof(page_dir))) return NULL;
 
-    struct PageDirectoryEntry *dir_entry = &page_dir->table[page_directory_index];
+    volatile struct PageDirectoryEntry *dir_entry = &page_dir->table[page_directory_index];
 
     if (dir_entry->flag.present_bit) {
         return (struct PageTable *)(RECURSIVE_PAGE_TABLES_VIRTUAL_ADDRESS + page_directory_index * PAGE_FRAME_SIZE);
@@ -52,7 +53,7 @@ struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t
     return NULL;
 }
 
-void update_page_directory_entry(
+void update_page_table_entry(
     struct PageDirectory *page_dir,
     void *physical_addr, 
     void *virtual_addr, 
@@ -60,7 +61,7 @@ void update_page_directory_entry(
 ) {
     uint32_t page_directory_index = ((uint32_t)virtual_addr >> 22) & 0x3FF;
     uint32_t page_table_index = ((uint32_t)virtual_addr >> 12) & 0x3FF;
-    struct PageTable *page_table = get_page_table(page_dir, page_directory_index, true);
+    struct PageTable *page_table = paging_get_page_table(page_dir, page_directory_index); // previously accepts a boolean parameter. change if need be
     if (page_table == NULL) return;
     page_table->table[page_table_index].flag = flag;
     page_table->table[page_table_index].physical_page_base_address = ((uint32_t) physical_addr >> 12);
@@ -71,17 +72,23 @@ void flush_single_tlb(void *virtual_addr) {
     asm volatile("invlpg (%0)" : /* <Empty> */ : "b"(virtual_addr): "memory");
 }
 
+struct PageDirectory *paging_get_current_page_directory_addr(void) {
+    return NULL; // temp dulu aja
+}
 
 
 /* --- Memory Management --- */
 // TODO: Implement
 bool paging_allocate_check(uint32_t amount) {
+    (void) amount; // temp aja
     // TODO: Check whether requested amount is available
     return true;
 }
 
 
 bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr) {
+    (void) page_dir; // temp aja
+    (void) virtual_addr; // temp aja
     /**
      * TODO: Find free physical frame and map virtual frame into it
      * - Find free physical frame in page_manager_state.page_frame_map[] using any strategies
@@ -96,6 +103,8 @@ bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtu
 }
 
 bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr) {
+    (void) page_dir; // temp aja
+    (void) virtual_addr; // temp aja
     /* 
      * TODO: Deallocate a physical frame from respective virtual address
      * - Use the page_dir.table values to check mapped physical frame

@@ -43,7 +43,7 @@ extern struct PageTable _paging_kernel_page_table;
 struct PageDirectoryEntryFlag {
     uint32_t present_bit        : 1;
     uint32_t write_bit          : 1;
-    uint32_t user_bit           : 1;
+    uint32_t us_bit             : 1;
     uint32_t wt_bit             : 1;
     uint32_t cd_bit             : 1;
     uint32_t access_bit         : 1;
@@ -67,7 +67,7 @@ struct PageDirectoryEntryFlag {
 struct PageTableEntryFlag {
     uint32_t present_bit        : 1;
     uint32_t write_bit          : 1;
-    uint32_t user_bit           : 1;
+    uint32_t us_bit             : 1;
     uint32_t wt_bit             : 1;
     uint32_t cd_bit             : 1;
     uint32_t access_bit         : 1;
@@ -91,12 +91,12 @@ struct PageTableEntryFlag {
  */
 struct PageDirectoryEntry {
     struct PageDirectoryEntryFlag flag;
-    uint16_t global_page      : 1;
-    uint16_t ignored          : 3;
-    uint16_t page_attr_table  : 1;
-    uint16_t higher_address   : 8;
-    uint16_t reserved         : 1;
-    uint16_t lower_address    : 10;
+    uint16_t global_page                : 1;
+    uint16_t ignored                    : 3;
+    uint16_t page_attr_table            : 1;
+    uint16_t higher_address             : 8;
+    uint16_t reserved                   : 1;
+    uint16_t page_table_base_address    : 10;
     // TODO (DONE) : Continue, Use uint16_t + bitfield here, Do not use uint8_t
 }__attribute__((packed));
 
@@ -115,12 +115,12 @@ struct PageDirectoryEntry {
  */
 struct PageTableEntry {
     struct PageTableEntryFlag flag;
-    uint16_t global_page      : 1;
-    uint16_t ignored          : 3;
-    uint16_t page_attr_table  : 1;
-    uint16_t higher_address   : 8;
-    uint16_t reserved         : 1;
-    uint16_t lower_address    : 10;
+    uint16_t global_page                   : 1;
+    uint16_t ignored                       : 3;
+    uint16_t page_attr_table               : 1;
+    uint16_t higher_address                : 8;
+    uint16_t reserved                      : 1;
+    uint16_t physical_page_base_address    : 10;
     // TODO (DONE) : Continue, Use uint16_t + bitfield here, Do not use uint8_t
 }__attribute__((packed));
 /**
@@ -142,9 +142,9 @@ struct PageDirectory {
  *  Page Table, contain array of PageTableEntry
  */
 struct PageTable {
-    volatile struct PageTableEntry table[PAGE_ENTRY_COUNT]
+    volatile struct PageTableEntry table[PAGE_ENTRY_COUNT];
     // TODO (DONE) : Implement
-}__attribute__((packed));
+}__attribute__((packed, aligned(0x1000)));
 
 /**
  * Containing page manager states.
@@ -168,13 +168,28 @@ struct PageManagerState {
  * @param page_dir      Page directory to update
  * @param physical_addr Physical address to map
  * @param virtual_addr  Virtual address to map
- * @param flag          Page entry flags
+ * @param flag          Page directory entry flags
  */
 void update_page_directory_entry(
     struct PageDirectory *page_dir,
     void *physical_addr, 
     void *virtual_addr, 
     struct PageDirectoryEntryFlag flag
+);
+
+/**
+ * Edit page directory with respective parameter
+ * 
+ * @param page_dir      Page directory which contains the table to update
+ * @param physical_addr Physical address to map
+ * @param virtual_addr  Virtual address to map
+ * @param flag          Page table entry flags
+ */
+void update_table_directory_entry(
+    struct PageDirectory *page_dir,
+    void *physical_addr, 
+    void *virtual_addr, 
+    struct PageTableEntryFlag flag
 );
 
 /**
@@ -193,9 +208,7 @@ struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t
  */
 void flush_single_tlb(void *virtual_addr);
 
-
-
-
+struct PageDirectory *paging_get_current_page_directory_addr(void);
 
 /* --- Memory Management --- */
 /**
