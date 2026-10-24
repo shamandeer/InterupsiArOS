@@ -25,7 +25,7 @@ struct PageManagerState page_manager_state = {
 struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index) {
     //this helper function is given from kit but you can always modified it if you think theres a bug (spoiler alert) or you think theres a better approach
 
-    if (page_directory_index == RECURSIVE_PAGE_DIRECTORY_INDEX || memcmp(page_dir, paging_get_current_page_directory_addr(), sizeof(page_dir))) return NULL;
+    if (page_directory_index == RECURSIVE_PAGE_DIRECTORY_INDEX || page_dir != paging_get_current_page_directory_addr()) return NULL;
 
     volatile struct PageDirectoryEntry *dir_entry = &page_dir->table[page_directory_index];
 

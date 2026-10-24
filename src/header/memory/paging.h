@@ -32,12 +32,12 @@ extern struct PageTable _paging_kernel_page_table;
  * Page Directory Entry Flag, only first 8 bit
  * @param present_bit        Indicate whether this entry is exist or not. If the bit is set, the page is actually in physical memory at the moment. When a page is swapped out, it is not in the physical memory.
  * @param write_bit          Indicate whether this page is writable. If the bit is set, the page is read/write. Otherwise when it is not set, the page is read-only. Should be same as table.
- * @param us_bit           Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
+ * @param us_bit             Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
  * @param wt_bit             Indicate write-through abilities of the page. If the bit is set, write-through caching is enabled. If not, then write-back is enabled instead.
  * @param cd_bit             Indicate if cache is disabled. If the bit is set, the page will not be cached. Otherwise, it will be.
  * @param access_bit         Indicate whether a PDE or PTE was read during virtual address translation. If it has, then the bit is set, otherwise, it is not.
- * @param dirty_bit          Indicate whether a page has been written to.
- * @param use_pagesize_4_mb  Indicate whether this entry use 4 MB page size (set false).
+ * @param ignored            Yaa, ignored
+ * @param use_pagesize_4_mb  Indicate whether this entry use 4 MB page size (set false). Also known as PS bit
  * References: Intel Manual 3a - Ch 4 Paging - Figure 4-4 PDE: 4KB page
  */
 struct PageDirectoryEntryFlag {
@@ -47,21 +47,21 @@ struct PageDirectoryEntryFlag {
     uint32_t wt_bit             : 1;
     uint32_t cd_bit             : 1;
     uint32_t access_bit         : 1;
-    uint32_t dirty_bit          : 1;
+    uint32_t ignored            : 1;
     uint32_t use_pagesize_4_mb  : 1; // always set this as false because we want to use 4KiB page size instead
     // TODO (DONE) : Continue. Note: Only 8-bit flags 
 } __attribute__((packed));
 
 /**
- * Page Directory Entry Flag, only first 8 bit
+ * Page Table Entry Flag, only first 8 bit
  * @param present_bit        Indicate whether this entry is exist or not.
  * @param write_bit          Indicate whether this page is writable
- * @param us_bit           Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
+ * @param us_bit             Indicate whether this page is accessable by all. If the bit is set, then the page may be accessed by all; if the bit is not set, however, only the supervisor can access it. Should be same as table.
  * @param wt_bit             Indicate write-through abilities of the page. If the bit is set, write-through caching is enabled. If not, then write-back is enabled instead.
  * @param cd_bit             Indicate if cache is disabled. If the bit is set, the page will not be cached. Otherwise, it will be.
  * @param access_bit         Indicate whether a PDE or PTE was read during virtual address translation. If it has, then the bit is set, otherwise, it is not.
  * @param dirty_bit          Indicate whether a page has been written to.
- * @param use_pagesize_4_mb Indicate whether this entry use 4 MB page size (set false) 
+ * @param pat_bit            If the PAT is supported, indirectly determines the memory type used to access the 4-KByte page referenced by this entry
  * References: Intel Manual 3a - Ch 4 Paging - Figure 4-4 PDE: 4KB page
  */
 struct PageTableEntryFlag {
@@ -72,7 +72,7 @@ struct PageTableEntryFlag {
     uint32_t cd_bit             : 1;
     uint32_t access_bit         : 1;
     uint32_t dirty_bit          : 1;
-    uint32_t use_pagesize_4_mb  : 1; // always set this as false because we want to use 4KiB page size instead
+    uint32_t pat_bit            : 1; 
     // TODO (DONE) : Continue. Note: Only 8-bit flags 
 } __attribute__((packed));
 
@@ -83,20 +83,13 @@ struct PageTableEntryFlag {
  *
  * @param flag            Contain 8-bit page directory entry flag
  * @param global_page     G flag
- * @param ignored         Ignored bit (3-bit)
- * @param page_attr_table Page Attribute Table bit
- * @param higher_address  Bits 39:32 of address (8-bit)
- * @param reserved        Reserved bit (1-bit)
- * @param lower_address   Bits 31:22 of address (10-bit) act as pageTable index
+ * @param ignored         Ignored bit (4-bit)
+ * @param page_table_base_address   Bits 31:12 of address (20-bit) act as pageTable index
  */
 struct PageDirectoryEntry {
     struct PageDirectoryEntryFlag flag;
-    uint16_t global_page                : 1;
-    uint16_t ignored                    : 3;
-    uint16_t page_attr_table            : 1;
-    uint16_t higher_address             : 8;
-    uint16_t reserved                   : 1;
-    uint16_t page_table_base_address    : 10;
+    uint16_t ignored                    : 4;
+    uint32_t page_table_base_address    : 20;
     // TODO (DONE) : Continue, Use uint16_t + bitfield here, Do not use uint8_t
 }__attribute__((packed));
 
@@ -108,19 +101,13 @@ struct PageDirectoryEntry {
  * @param flag            Contain 8-bit page table entry flag
  * @param global_page     G flag
  * @param ignored         Ignored bit (3-bit)
- * @param page_attr_table Page Attribute Table bit
- * @param higher_address  Bits 39:32 of address (8-bit)
- * @param reserved        Reserved bit (1-bit)
- * @param lower_address   Bits 31:22 of address (10-bit) act as frame index
+ * @param physical_page_base_address   Bits 31:12 of address (20-bit) act as frame index
  */
 struct PageTableEntry {
     struct PageTableEntryFlag flag;
     uint16_t global_page                   : 1;
     uint16_t ignored                       : 3;
-    uint16_t page_attr_table               : 1;
-    uint16_t higher_address                : 8;
-    uint16_t reserved                      : 1;
-    uint16_t physical_page_base_address    : 10;
+    uint32_t physical_page_base_address    : 20;
     // TODO (DONE) : Continue, Use uint16_t + bitfield here, Do not use uint8_t
 }__attribute__((packed));
 /**
@@ -198,6 +185,7 @@ void update_page_table_entry(
  * @param page_directory_index page table's position/index on page directory 
  * note: sudah diberikan implementasinya pada paging.c dengan pendekatan fractal memory maping alias recursive memory mapping.
  * read: https://wiki.osdev.org/Fractal_Page_Mapping
+ * singkatnya: PD[1023] -> the directory itself, PD[1023] + i*PAGE_FRAME_SIZE adalah page table pada directory tersebut
  */
 struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index);
 
