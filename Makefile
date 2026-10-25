@@ -20,6 +20,7 @@ SOURCE_FOLDER = src
 OUTPUT_FOLDER = bin
 ISO_NAME      = OS2025
 DISK_NAME     = storage
+QEMU_MEM     ?= 128
 
 # Flags
 WARNING_CFLAG = -Wall -Wextra -Werror
@@ -32,7 +33,7 @@ IFLAGS        = -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -inp
 
 
 run: all
-	@qemu-system-i386 -s -S -drive file=$(OUTPUT_FOLDER)/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -drive file=$(OUTPUT_FOLDER)/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 all: build
 build: iso
 clean:
@@ -41,7 +42,7 @@ clean:
 
 
 disk:
-	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 4M
+	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 8M
 
 # host test for ext2 CRUD, fake disk on RAM (no QEMU needed)
 HOST_CC       = cc
@@ -68,6 +69,7 @@ kernel:
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/disk.c -o $(OUTPUT_FOLDER)/disk.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/filesystem/ext2.c -o $(OUTPUT_FOLDER)/ext2.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/paging.c -o $(OUTPUT_FOLDER)/paging.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/swap.c -o $(OUTPUT_FOLDER)/swap.o
 	@$(LIN) $(LFLAGS) $(OUTPUT_FOLDER)/*.o -o $(OUTPUT_FOLDER)/kernel
 	@echo Linking object files and generate elf32...
 	@rm -f $(OUTPUT_FOLDER)/*.o
