@@ -79,14 +79,14 @@ uint32_t swap_slot_alloc(void);
 /**
  * Release swap slot back to slot bitmap
  *
- * @param slot Slot number returned by swap_slot_alloc(). Slot >= SWAP_SLOT_COUNT is ignored
+ * @param slot Slot number returned by swap_slot_alloc(). Unallocated slot or slot >= SWAP_SLOT_COUNT is ignored
  */
 void swap_slot_free(uint32_t slot);
 
 /**
  * Write one page (4 KiB, BLOCKS_PER_PAGE blocks) from memory into swap slot
  *
- * @param slot  Allocated swap slot, must be < SWAP_SLOT_COUNT
+ * @param slot  Allocated swap slot. Unallocated or out of range slot is rejected, nothing is written
  * @param vaddr Page-aligned virtual address, page must be already mapped (present_bit = 1)
  */
 void swap_write_page(uint32_t slot, const void *vaddr);
@@ -94,7 +94,7 @@ void swap_write_page(uint32_t slot, const void *vaddr);
 /**
  * Read one page (4 KiB, BLOCKS_PER_PAGE blocks) from swap slot into memory
  *
- * @param slot  Allocated swap slot, must be < SWAP_SLOT_COUNT
+ * @param slot  Allocated swap slot. Unallocated or out of range slot is rejected, nothing is read
  * @param vaddr Page-aligned virtual address, page must be already mapped and writable
  */
 void swap_read_page(uint32_t slot, void *vaddr);
