@@ -212,7 +212,7 @@ bool paging_allocate_check(uint32_t amount);
  * 
  * @param page_dir     Page directory to update
  * @param virtual_addr Virtual address to be allocated
- * @return             Physical address of allocated frame
+ * @return             Physical address of allocated frame (uhh harusnya bool karena gagal atau nggak?)
  */
 bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr);
 
