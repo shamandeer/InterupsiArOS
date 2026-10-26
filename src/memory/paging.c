@@ -22,7 +22,7 @@ struct PageManagerState page_manager_state = {
     .free_page_frame_count = PAGE_FRAME_MAX_COUNT - KERNEL_RESERVED_PAGE_FRAME_COUNT,
 };
 
-struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index) {
+struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index, bool check_only) {
     //this helper function is given from kit but you can always modified it if you think theres a bug (spoiler alert) or you think theres a better approach
 
     if (page_directory_index == RECURSIVE_PAGE_DIRECTORY_INDEX || page_dir != paging_get_current_page_directory_addr()) return NULL;
@@ -31,6 +31,9 @@ struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t
 
     if (dir_entry->flag.present_bit) {
         return (struct PageTable *)(RECURSIVE_PAGE_TABLES_VIRTUAL_ADDRESS + page_directory_index * PAGE_FRAME_SIZE);
+    }
+    else {
+        if (check_only) return NULL;
     }
     for (uint32_t page_frame_number = KERNEL_RESERVED_PAGE_FRAME_COUNT;
          page_frame_number < PAGE_FRAME_MAX_COUNT;
@@ -61,7 +64,7 @@ void update_page_table_entry(
 ) {
     uint32_t page_directory_index = ((uint32_t)virtual_addr >> 22) & 0x3FF;
     uint32_t page_table_index = ((uint32_t)virtual_addr >> 12) & 0x3FF;
-    struct PageTable *page_table = paging_get_page_table(page_dir, page_directory_index); // previously accepts a boolean parameter. change if need be
+    struct PageTable *page_table = paging_get_page_table(page_dir, page_directory_index, false); // previously accepts a boolean parameter. change if need be
     if (page_table == NULL) return;
     page_table->table[page_table_index].flag = flag;
     page_table->table[page_table_index].physical_page_base_address = ((uint32_t) physical_addr >> 12);
@@ -80,31 +83,64 @@ struct PageDirectory *paging_get_current_page_directory_addr(void) {
 /* --- Memory Management --- */
 // TODO: Implement
 bool paging_allocate_check(uint32_t amount) {
-    (void) amount; // temp aja
-    // TODO: Check whether requested amount is available
-    return true;
+    // round up
+    uint32_t frame_req = (amount + PAGE_FRAME_SIZE - 1) / PAGE_FRAME_SIZE;
+    return frame_req <= page_manager_state.free_page_frame_count;
+    // TODO: done
 }
 
 
 bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr) {
-    (void) page_dir; // temp aja
-    (void) virtual_addr; // temp aja
+    if (!paging_allocate_check(PAGE_FRAME_SIZE)) return false;
+    uint32_t page_directory_index = ((uint32_t)virtual_addr >> 22) & 0x3FF;
+    uint32_t page_table_index = ((uint32_t)virtual_addr >> 12) & 0x3FF;
+    // cek dulu biar bisa rollback semisal get_page_table-nya gagal jadi state-nya ga keubah
+    struct PageTable *page_table = paging_get_page_table(page_dir, page_directory_index, false);
+    if (!page_table) return false;
+    // prevent overwrite kalo semisal ternyata udah dialokasiin
+    if (page_table->table[page_table_index].flag.present_bit) return false;
+
+    for (uint32_t frame = KERNEL_RESERVED_PAGE_FRAME_COUNT; frame < PAGE_FRAME_MAX_COUNT; frame++) {
+        if (!page_manager_state.page_frame_map[frame]) {
+            page_manager_state.page_frame_map[frame] = true;
+            page_manager_state.free_page_frame_count--;
+            struct PageTableEntryFlag flag = {
+                .present_bit = true,
+                .write_bit = true,
+                .us_bit = true
+            };
+            void *physical_addr = (void *) (frame * PAGE_FRAME_SIZE);
+            update_page_table_entry(page_dir, physical_addr, virtual_addr, flag);
+        }
+    }
+    return false;
     /**
-     * TODO: Find free physical frame and map virtual frame into it
+     * TODO (DONE?): Find free physical frame and map virtual frame into it
      * - Find free physical frame in page_manager_state.page_frame_map[] using any strategies
      * - Mark page_manager_state.page_frame_map[]
      * - Update page directory with user flags:
      *     > present bit    true
      *     > write bit      true
      *     > user bit       true
-     *     > pagesize 4 mb  true
+     *     > pagesize 4 mb  true (probably should just ignore this)
      */ 
-    return true;
 }
 
 bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr) {
-    (void) page_dir; // temp aja
-    (void) virtual_addr; // temp aja
+    uint32_t page_directory_index = ((uint32_t)virtual_addr >> 22) & 0x3FF;
+    uint32_t page_table_index = ((uint32_t)virtual_addr >> 12) & 0x3FF;
+    // cek dulu biar bisa rollback semisal get_page_table-nya gagal jadi state-nya ga keubah
+    struct PageTable *page_table = paging_get_page_table(page_dir, page_directory_index, true);
+    if (!page_table) return false;
+    
+    if (!page_table->table[page_table_index].flag.present_bit) return false;
+    else {
+        uint32_t frame_number = page_table->table[page_table_index].physical_page_base_address;
+        page_table->table[page_table_index].flag.present_bit = false;
+        page_manager_state.page_frame_map[frame_number] = false;
+        page_manager_state.free_page_frame_count++;
+        flush_single_tlb(virtual_addr);
+    }
     /* 
      * TODO: Deallocate a physical frame from respective virtual address
      * - Use the page_dir.table values to check mapped physical frame

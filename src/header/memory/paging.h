@@ -183,11 +183,12 @@ void update_page_table_entry(
  * Get the requested page table from respective parameter
  * @param page_dir      Page directory to read
  * @param page_directory_index page table's position/index on page directory 
+ * @param check_only    Only checks if the directory entry is present or not. If it is not present, instead of mapping a page table it returns NULL (butuh buat free)
  * note: sudah diberikan implementasinya pada paging.c dengan pendekatan fractal memory maping alias recursive memory mapping.
  * read: https://wiki.osdev.org/Fractal_Page_Mapping
  * singkatnya: PD[1023] -> the directory itself, PD[1023] + i*PAGE_FRAME_SIZE adalah page table pada directory tersebut
  */
-struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index);
+struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index, bool check_only);
 
 /**
  * Invalidate page that contain virtual address in parameter
@@ -212,7 +213,7 @@ bool paging_allocate_check(uint32_t amount);
  * 
  * @param page_dir     Page directory to update
  * @param virtual_addr Virtual address to be allocated
- * @return             Physical address of allocated frame
+ * @return             Physical address of allocated frame (uhh harusnya bool karena gagal atau nggak?)
  */
 bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr);
 
