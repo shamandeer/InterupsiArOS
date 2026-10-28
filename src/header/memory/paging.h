@@ -20,6 +20,7 @@
 #define KERNEL_RESERVED_PAGE_FRAME_COUNT (0x400000u / PAGE_FRAME_SIZE)
 #define RECURSIVE_PAGE_TABLES_VIRTUAL_ADDRESS 0xFFC00000u
 #define RECURSIVE_PAGE_DIRECTORY_INDEX 1023u
+#define KERNEL_VIRTUAL_BASE 0xC0000000
 
 // Maximum usable page frame. Default count: 128 MiB / 4 KiB = 32768 frames
 #define PAGE_FRAME_MAX_COUNT ((SYSTEM_MEMORY_MB << 20) / PAGE_FRAME_SIZE)
@@ -197,6 +198,9 @@ struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t
  */
 void flush_single_tlb(void *virtual_addr);
 
+/**
+ * Get CR3 address
+ */
 struct PageDirectory *paging_get_current_page_directory_addr(void);
 
 /* --- Memory Management --- */
