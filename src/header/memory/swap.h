@@ -84,6 +84,13 @@ uint32_t swap_slot_alloc(void);
 void swap_slot_free(uint32_t slot);
 
 /**
+ * Get number of free swap slots, kept in sync by swap_slot_alloc() / swap_slot_free()
+ *
+ * @return Free slot count, 0 .. SWAP_SLOT_COUNT
+ */
+uint32_t swap_free_slot_count(void);
+
+/**
  * Write one page (4 KiB, BLOCKS_PER_PAGE blocks) from memory into swap slot
  *
  * @param slot  Allocated swap slot. Unallocated or out of range slot is rejected, nothing is written

@@ -36,24 +36,34 @@ static uint8_t *slot_on_disk(uint32_t slot) {
 
 static void test_alloc_until_full(void) {
     swap_init();
+    CHECK(swap_free_slot_count() == SWAP_SLOT_COUNT);
     CHECK(alloc_all_slots());
+    CHECK(swap_free_slot_count() == 0);
     CHECK(swap_slot_alloc() == SWAP_INVALID_SLOT); // slot ke-1025
+    CHECK(swap_free_slot_count() == 0);            // failed alloc must not underflow
 }
 
 static void test_free_and_reuse(void) {
     swap_init();
     alloc_all_slots();
     swap_slot_free(500);
+    CHECK(swap_free_slot_count() == 1);
     CHECK(swap_slot_alloc() == 500);
+    CHECK(swap_free_slot_count() == 0);
     CHECK(swap_slot_alloc() == SWAP_INVALID_SLOT);
 
-    // double free & out of range free must not corrupt bitmap
+    // double free & out of range free must not corrupt bitmap or counter
     swap_slot_free(500);
     swap_slot_free(500);
     swap_slot_free(SWAP_SLOT_COUNT);
     swap_slot_free(SWAP_INVALID_SLOT);
+    CHECK(swap_free_slot_count() == 1);
     CHECK(swap_slot_alloc() == 500);
     CHECK(swap_slot_alloc() == SWAP_INVALID_SLOT);
+
+    // swap_init resets counter too
+    swap_init();
+    CHECK(swap_free_slot_count() == SWAP_SLOT_COUNT);
 }
 
 static void test_roundtrip(void) {
