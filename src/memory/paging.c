@@ -22,6 +22,12 @@ struct PageManagerState page_manager_state = {
     .free_page_frame_count = PAGE_FRAME_MAX_COUNT - KERNEL_RESERVED_PAGE_FRAME_COUNT,
 };
 
+struct PageDirectory *paging_get_current_page_directory_addr(void) {
+    uint32_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    return (struct PageDirectory *)((cr3 & 0xFFFFF000u) + KERNEL_VIRTUAL_BASE);
+}
+
 struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index, bool check_only) {
     //this helper function is given from kit but you can always modified it if you think theres a bug (spoiler alert) or you think theres a better approach
 
@@ -111,6 +117,7 @@ bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtu
             };
             void *physical_addr = (void *) (frame * PAGE_FRAME_SIZE);
             update_page_table_entry(page_dir, physical_addr, virtual_addr, flag);
+            return true;
         }
     }
     return false;
