@@ -6,6 +6,16 @@
 void fake_disk_reset(void);
 uint8_t *fake_disk_raw(void);
 
+// paging.c is not linked on host: own frame state + stubs so swap_out_one links (never called here)
+struct PageManagerState page_manager_state;
+struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index, bool check_only) {
+    (void) page_dir; (void) page_directory_index; (void) check_only;
+    return NULL;
+}
+void flush_single_tlb(void *virtual_addr) {
+    (void) virtual_addr;
+}
+
 #define EXT2_AREA_SIZE (SWAP_START_LBA * BLOCK_SIZE)                                       // 4 MiB
 #define DISK_SIZE      ((SWAP_START_LBA + SWAP_SLOT_COUNT * BLOCKS_PER_PAGE) * BLOCK_SIZE) // 8 MiB
 
@@ -128,12 +138,97 @@ static void test_invalid_slot_rejected(void) {
     CHECK(memcmp(back, page, PAGE_FRAME_SIZE) == 0);
 }
 
+/* ---------- clock victim selection ---------- */
+
+#define K KERNEL_RESERVED_PAGE_FRAME_COUNT
+
+static bool fake_access[PAGE_FRAME_MAX_COUNT];
+
+// same contract as spare_if_accessed() in swap.c, access bit taken from fake_access
+static bool spare_fake(void *ctx, uint32_t frame) {
+    bool *access = ctx;
+    if (!access[frame])
+        return false;
+    access[frame] = false;
+    return true;
+}
+
+// frames K .. K+count-1 used and swappable, every access bit = referenced
+static void clock_setup(uint32_t count, bool referenced) {
+    memset(&page_manager_state, 0, sizeof(page_manager_state));
+    memset(fake_access, 0, sizeof(fake_access));
+    for (uint32_t f = K; f < K + count; f++) {
+        page_manager_state.page_frame_map[f]  = true;
+        page_manager_state.frame_swappable[f] = true;
+        fake_access[f] = referenced;
+    }
+}
+
+static void test_clock_all_unreferenced(void) {
+    uint32_t hand = K;
+    clock_setup(4, false);
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == K);
+    CHECK(hand == K + 1);
+}
+
+static void test_clock_all_referenced(void) {
+    uint32_t hand = K;
+    clock_setup(4, true);
+    // round 1 clears every access bit, round 2 comes back to the first frame
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == K);
+    CHECK(hand == K + 1);
+    CHECK(!fake_access[K] && !fake_access[K + 1] && !fake_access[K + 2] && !fake_access[K + 3]);
+}
+
+static void test_clock_skips_non_victims(void) {
+    uint32_t hand = K;
+    clock_setup(4, false);
+    page_manager_state.frame_swappable[K] = false; // e.g. page table frame
+    page_manager_state.page_frame_map[K + 1] = false; // free frame
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == K + 2);
+    CHECK(hand == K + 3);
+}
+
+static void test_clock_hand_continues(void) {
+    uint32_t hand = K;
+    clock_setup(4, false);
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == K);
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == K + 1);
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == K + 2);
+    // K+3 referenced: spared, hand wraps around past the end back to K
+    fake_access[K + 3] = true;
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == K);
+    CHECK(!fake_access[K + 3]);
+    CHECK(hand == K + 1);
+}
+
+static void test_clock_wraps_at_end(void) {
+    uint32_t hand = PAGE_FRAME_MAX_COUNT - 1;
+    clock_setup(1, false);
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == K);
+}
+
+static void test_clock_no_candidate(void) {
+    uint32_t hand = K + 7;
+    clock_setup(4, true);
+    for (uint32_t f = K; f < K + 4; f++)
+        page_manager_state.frame_swappable[f] = false;
+    CHECK(swap_clock_pick_victim(&hand, spare_fake, fake_access) == PAGING_INVALID_FRAME);
+    CHECK(hand == K + 7); // exactly two full rounds
+}
+
 int main(void) {
     test_alloc_until_full();
     test_free_and_reuse();
     test_roundtrip();
     test_ext2_area_untouched();
     test_invalid_slot_rejected();
+    test_clock_all_unreferenced();
+    test_clock_all_referenced();
+    test_clock_skips_non_victims();
+    test_clock_hand_continues();
+    test_clock_wraps_at_end();
+    test_clock_no_candidate();
 
     printf("%d passed, %d failed\n", passes, fails);
     return fails != 0;

@@ -106,6 +106,23 @@ void swap_write_page(uint32_t slot, const void *vaddr);
  */
 void swap_read_page(uint32_t slot, void *vaddr);
 
+// Number of successful swap_out_one() calls since swap_init()
+extern uint32_t swap_out_count;
+
+/**
+ * Clock (second chance) victim selection, without touching any PTE.
+ * Hand walks frames KERNEL_RESERVED_PAGE_FRAME_COUNT .. PAGE_FRAME_MAX_COUNT-1 (wrapping),
+ * at most two rounds. Frames not used or not swappable in page_manager_state are skipped.
+ * Every visited frame advances the hand, so after a victim is found hand points to victim + 1.
+ *
+ * @param hand  Clock hand, in/out
+ * @param spare Called for each candidate. Return true to give it a second chance
+ *              (and clear its reference), false to pick it as victim
+ * @param ctx   Passed as-is to spare
+ * @return      Victim frame number, or PAGING_INVALID_FRAME when there is no candidate
+ */
+uint32_t swap_clock_pick_victim(uint32_t *hand, bool (*spare)(void *ctx, uint32_t frame), void *ctx);
+
 /**
  * Evict one swappable page frame using Clock (second chance) with PTE access_bit.
  * Victim content is written to a new swap slot while still mapped, then the PTE
