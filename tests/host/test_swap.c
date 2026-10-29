@@ -6,7 +6,8 @@
 void fake_disk_reset(void);
 uint8_t *fake_disk_raw(void);
 
-// paging.c is not linked on host: own frame state + stubs so swap_out_one links (never called here)
+// paging.c / framebuffer.c are not linked on host: own frame state + stubs so swap_out_one, swap_in
+// and page_fault_handler link (never called here)
 struct PageManagerState page_manager_state;
 struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index, bool check_only) {
     (void) page_dir; (void) page_directory_index; (void) check_only;
@@ -14,6 +15,18 @@ struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t
 }
 void flush_single_tlb(void *virtual_addr) {
     (void) virtual_addr;
+}
+struct PageDirectory *paging_get_current_page_directory_addr(void) {
+    return NULL;
+}
+uint32_t paging_find_free_frame(void) {
+    return PAGING_INVALID_FRAME;
+}
+void update_page_table_entry(struct PageDirectory *page_dir, void *physical_addr, void *virtual_addr, struct PageTableEntryFlag flag) {
+    (void) page_dir; (void) physical_addr; (void) virtual_addr; (void) flag;
+}
+void framebuffer_write(uint8_t row, uint8_t col, char c, uint8_t fg, uint8_t bg) {
+    (void) row; (void) col; (void) c; (void) fg; (void) bg;
 }
 
 #define EXT2_AREA_SIZE (SWAP_START_LBA * BLOCK_SIZE)                                       // 4 MiB

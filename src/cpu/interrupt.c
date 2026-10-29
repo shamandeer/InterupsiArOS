@@ -1,6 +1,7 @@
 #include "header/cpu/interrupt.h"
 #include "header/cpu/portio.h"
 #include "header/driver/keyboard.h"
+#include "header/memory/swap.h"
 
 void io_wait(void) {
     out(0x80, 0);
@@ -42,6 +43,12 @@ void main_interrupt_handler(struct InterruptFrame frame) {
         case PIC1_OFFSET + IRQ_KEYBOARD:
             keyboard_isr();
             break;
+        case 0xE: { // page fault, CR2 holds the faulting address
+            uint32_t cr2;
+            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+            page_fault_handler(cr2, frame.int_stack.error_code);
+            break;
+        }
     }
 }
 

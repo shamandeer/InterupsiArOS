@@ -109,6 +109,9 @@ void swap_read_page(uint32_t slot, void *vaddr);
 // Number of successful swap_out_one() calls since swap_init()
 extern uint32_t swap_out_count;
 
+// Number of successful swap_in() calls since swap_init()
+extern uint32_t swap_in_count;
+
 /**
  * Clock (second chance) victim selection, without touching any PTE.
  * Hand walks frames KERNEL_RESERVED_PAGE_FRAME_COUNT .. PAGE_FRAME_MAX_COUNT-1 (wrapping),
