@@ -6,7 +6,22 @@
             "label": "Build OS",
             "command": "make",
             "args": [
-                "build",
+                "build"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "type": "cppbuild",
+            "label": "Build Inserter",
+            "command": "make",
+            "args": [
+                "inserter"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -37,7 +52,7 @@
                 "background": {
                     "activeOnStart": true,
                     "beginsPattern": ".",
-                    "endsPattern": ".",
+                    "endsPattern": "."
                 }
             }
         },
@@ -46,5 +61,5 @@
             "label": "Exit QEMU",
             "command": "pkill -f qemu || test $? -eq 1"
         }
-    ],
+    ]
 }

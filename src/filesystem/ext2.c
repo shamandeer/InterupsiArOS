@@ -780,8 +780,8 @@ int8_t write(struct EXT2DriverRequest *request) {
 /* C: Bagian King Aqsha semoga gak terlalu ngeslop */
 
 int8_t read(struct EXT2DriverRequest request) {
-    // error code -1 (asumsi buffer atau nama null)
-    if (request.buf == NULL || request.name == NULL || request.name_len == 0) return -1;
+    // error code -1 (asumsi nama null). buf == NULL is valid: user program is loaded at virtual address 0x0
+    if (request.name == NULL || request.name_len == 0) return -1;
     struct EXT2Inode parent;
     // error code 4 (parent invalid)
     if (!load_directory_node(&parent, request.parent_inode)) {
