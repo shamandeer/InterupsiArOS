@@ -51,6 +51,10 @@ void shell_io_write(struct ShellIO *io, const char *data, uint32_t len) {
     io->out[io->out_len] = '\0';
 }
 
+void shell_io_puts(struct ShellIO *io, const char *s) {
+    shell_io_write(io, s, shell_strlen(s));
+}
+
 void shell_io_putc(struct ShellIO *io, char c) {
     shell_io_write(io, &c, 1);
 }

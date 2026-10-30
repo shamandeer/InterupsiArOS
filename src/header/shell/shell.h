@@ -85,6 +85,7 @@ void shell_putchar(char c, uint8_t color);
 void shell_error(const char *cmd, const char *arg, const char *msg);
 void shell_io_write(struct ShellIO *io, const char *data, uint32_t len);
 void shell_io_putc(struct ShellIO *io, char c);
+void shell_io_puts(struct ShellIO *io, const char *s);
 
 
 /* fs.c */

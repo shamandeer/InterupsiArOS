@@ -237,6 +237,28 @@ static void test_grep_and_pipeline(void) {
     CHECK_STR(run("ls | grep a | grep alpha a.txt"), "alpha\nalphabet\n");
 }
 
+static void test_cp_rm(void) {
+    reset_shell();
+    put_file("a.txt", "alpha\nbeta\n");
+    CHECK_STR(run("mkdir d"), "");
+
+    CHECK_STR(run("cp a.txt b.txt"), "cp: copied 'a.txt' to 'b.txt'\n");
+    CHECK_STR(run("grep beta b.txt"), "beta\n");
+    CHECK_STR(run("cp a.txt d"), "cp: copied 'a.txt' to 'd'\n");
+    CHECK_STR(run("grep alpha d/a.txt"), "alpha\n");
+    CHECK_STR(run("cp a.txt b.txt"), "cp: destination already exists\n");
+    CHECK_STR(run("cp nofile x"), "cp: source file not found\n");
+    CHECK_STR(run("cp a.txt"), "cp: missing file operand\n");
+
+    CHECK_STR(run("rm b.txt"), "rm: removed 'b.txt'\n");
+    CHECK_STR(run("grep beta b.txt"), "grep: b.txt: no such file\n");
+    CHECK_STR(run("rm d"), "rm: directory not empty (use -r)\n");
+    CHECK_STR(run("rm -r d"), "rm: removed 'd'\n");
+    CHECK_STR(run("ls"), "a.txt\n");
+    CHECK_STR(run("rm"), "rm: missing operand\n");
+    CHECK_STR(run("rm nofile"), "rm: target not found\n");
+}
+
 static void test_large_file(void) {
     reset_shell();
     static char big[40000], expected[128];
@@ -295,6 +317,7 @@ int main(void) {
     test_mkdir_ls_cd();
     test_cd_file_is_rejected();
     test_grep_and_pipeline();
+    test_cp_rm();
     test_large_file();
     test_read_line();
     test_cwd_overflow();

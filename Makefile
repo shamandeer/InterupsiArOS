@@ -1,4 +1,3 @@
-# Compiler & linker
 ASM           = nasm
 
 UNAME_S      := $(shell uname -s)
@@ -15,14 +14,12 @@ II            = genisoimage
 ARCH_CFLAG    =
 endif
 
-# Directory
 SOURCE_FOLDER = src
 OUTPUT_FOLDER = bin
 ISO_NAME      = OS2025
 DISK_NAME     = storage
 QEMU_MEM     ?= 128
 
-# Flags
 WARNING_CFLAG = -Wall -Wextra -Werror
 DEBUG_CFLAG   = -fshort-wchar -g
 STRIP_CFLAG   = -nostdlib -fno-stack-protector -nostartfiles -nodefaultlibs -ffreestanding
@@ -31,20 +28,16 @@ AFLAGS        = -f elf32 -g -F dwarf
 LFLAGS        = -T $(SOURCE_FOLDER)/linker.ld -melf_i386
 IFLAGS        = -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -input-charset utf8 -quiet -boot-info-table
 
-
 run: all
 	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -drive file=$(OUTPUT_FOLDER)/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 all: build
 build: iso
 clean:
-	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel
-
-
+	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user
 
 disk:
 	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 8M
 
-# host test for ext2 CRUD, fake disk on RAM (no QEMU needed)
 HOST_CC       = cc
 TEST_FOLDER   = tests/host
 TEST_SOURCE   = $(SOURCE_FOLDER)/filesystem/ext2.c $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_ext2.c
@@ -55,12 +48,12 @@ test:
 	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SOURCE) -o $(OUTPUT_FOLDER)/test_ext2
 	@./$(OUTPUT_FOLDER)/test_ext2 .kit/ch2/sample-image.bin
 
-# host test for swap slot manager & swap page I/O
 SWAP_TEST_SOURCE = $(SOURCE_FOLDER)/memory/swap.c $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_swap.c
 test-swap:
 	@mkdir -p $(OUTPUT_FOLDER)
 	@$(HOST_CC) $(HOST_CFLAGS) $(SWAP_TEST_SOURCE) -o $(OUTPUT_FOLDER)/test_swap
 	@./$(OUTPUT_FOLDER)/test_swap
+
 
 # host test for shell parser, commands and pipeline, syscalls emulated on top of ext2
 SHELL_TEST_SOURCE = $(SOURCE_FOLDER)/filesystem/ext2.c $(filter-out %/syscall.c,$(wildcard $(SOURCE_FOLDER)/shell/*.c)) $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_shell.c
@@ -81,13 +74,25 @@ $(USER_CRT0): $(SOURCE_FOLDER)/crt0.s
 
 $(OUTPUT_FOLDER)/user/%.o: $(SOURCE_FOLDER)/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -fno-pie $< -o $@
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $< -o $@
 
 user-shell: $(USER_CRT0) $(SHELL_OBJECTS)
 	@$(LIN) $(USER_LFLAGS) --oformat=binary $^ -o $(OUTPUT_FOLDER)/shell
 	@$(LIN) $(USER_LFLAGS) --oformat=elf32-i386 $^ -o $(OUTPUT_FOLDER)/shell_elf
 	@rm -rf $(OUTPUT_FOLDER)/user
 	@echo Linking user shell, generate flat binary and shell_elf...
+
+inserter:
+	@mkdir -p $(OUTPUT_FOLDER)
+	@$(CC) -Wno-builtin-declaration-mismatch -g -I$(SOURCE_FOLDER) \
+		$(SOURCE_FOLDER)/stdlib/string.c \
+		$(SOURCE_FOLDER)/filesystem/ext2.c \
+		$(SOURCE_FOLDER)/external/external-inserter.c \
+		-o $(OUTPUT_FOLDER)/inserter
+
+insert-shell: inserter user-shell
+	@echo Inserting shell into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter -f shell 2 $(DISK_NAME).bin
 
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
