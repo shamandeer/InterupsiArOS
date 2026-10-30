@@ -22,6 +22,8 @@ void initialize_idt(void) {
     for (int i = 0; i < ISR_STUB_TABLE_LIMIT; i++) {
         set_interrupt_gate(i, isr_stub_table[i], GDT_KERNEL_CODE_SEGMENT_SELECTOR, 0);
     }
+    // Vector 0x30 is the syscall gate, must be callable from user mode (DPL 3)
+    set_interrupt_gate(0x30, isr_stub_table[0x30], GDT_KERNEL_CODE_SEGMENT_SELECTOR, 3);
     __asm__ volatile("lidt %0" : : "m"(_idt_idtr));
     __asm__ volatile("sti");
 }

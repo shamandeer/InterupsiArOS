@@ -37,7 +37,7 @@ run: all
 all: build
 build: iso
 clean:
-	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel
+	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user
 
 
 
@@ -69,6 +69,24 @@ inserter:
 		$(SOURCE_FOLDER)/filesystem/ext2.c \
 		$(SOURCE_FOLDER)/external/external-inserter.c \
 		-o $(OUTPUT_FOLDER)/inserter
+
+# user program (flat binary executable + ELF32 for debugging), object files kept in bin/user so they are not linked into kernel
+USER_FOLDER   = $(OUTPUT_FOLDER)/user
+user-shell:
+	@mkdir -p $(USER_FOLDER)
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(USER_FOLDER)/crt0.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/user-shell.c -o $(USER_FOLDER)/user-shell.o
+	@$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386 --oformat=binary \
+		$(USER_FOLDER)/crt0.o $(USER_FOLDER)/user-shell.o -o $(OUTPUT_FOLDER)/shell
+	@$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386 --oformat=elf32-i386 \
+		$(USER_FOLDER)/crt0.o $(USER_FOLDER)/user-shell.o -o $(OUTPUT_FOLDER)/shell_elf
+	@echo Linking object shell object files and generate flat binary...
+	@size --target=binary $(OUTPUT_FOLDER)/shell
+	@rm -rf $(USER_FOLDER)
+
+insert-shell: inserter user-shell
+	@echo Inserting shell into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter -f shell 2 $(DISK_NAME).bin
 
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
