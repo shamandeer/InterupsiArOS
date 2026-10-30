@@ -81,10 +81,6 @@ void flush_single_tlb(void *virtual_addr) {
     asm volatile("invlpg (%0)" : /* <Empty> */ : "b"(virtual_addr): "memory");
 }
 
-struct PageDirectory *paging_get_current_page_directory_addr(void) {
-    return NULL; // temp dulu aja
-}
-
 
 /* --- Memory Management --- */
 // TODO: Implement
