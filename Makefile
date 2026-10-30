@@ -20,6 +20,7 @@ SOURCE_FOLDER = src
 OUTPUT_FOLDER = bin
 ISO_NAME      = OS2025
 DISK_NAME     = storage
+QEMU_MEM     ?= 128
 
 # Flags
 WARNING_CFLAG = -Wall -Wextra -Werror
@@ -32,7 +33,7 @@ IFLAGS        = -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -inp
 
 
 run: all
-	@qemu-system-i386 -s -S -drive file=$(OUTPUT_FOLDER)/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -drive file=$(OUTPUT_FOLDER)/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 all: build
 build: iso
 clean:
@@ -41,17 +42,25 @@ clean:
 
 
 disk:
-	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 4M
+	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 8M
 
 # host test for ext2 CRUD, fake disk on RAM (no QEMU needed)
 HOST_CC       = cc
 TEST_FOLDER   = tests/host
 TEST_SOURCE   = $(SOURCE_FOLDER)/filesystem/ext2.c $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_ext2.c
-TEST_CFLAGS   = -Wall -Wextra -Werror -std=gnu11 -I$(SOURCE_FOLDER) -Dread=ext2_read -Dwrite=ext2_write -Ddelete=ext2_delete
+HOST_CFLAGS   = -Wall -Wextra -Werror -std=gnu11 -I$(SOURCE_FOLDER)
+TEST_CFLAGS   = $(HOST_CFLAGS) -Dread=ext2_read -Dwrite=ext2_write -Ddelete=ext2_delete
 test:
 	@mkdir -p $(OUTPUT_FOLDER)
 	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SOURCE) -o $(OUTPUT_FOLDER)/test_ext2
 	@./$(OUTPUT_FOLDER)/test_ext2 .kit/ch2/sample-image.bin
+
+# host test for swap slot manager & swap page I/O
+SWAP_TEST_SOURCE = $(SOURCE_FOLDER)/memory/swap.c $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_swap.c
+test-swap:
+	@mkdir -p $(OUTPUT_FOLDER)
+	@$(HOST_CC) $(HOST_CFLAGS) $(SWAP_TEST_SOURCE) -o $(OUTPUT_FOLDER)/test_swap
+	@./$(OUTPUT_FOLDER)/test_swap
 
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -68,6 +77,7 @@ kernel:
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/disk.c -o $(OUTPUT_FOLDER)/disk.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/filesystem/ext2.c -o $(OUTPUT_FOLDER)/ext2.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/paging.c -o $(OUTPUT_FOLDER)/paging.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/swap.c -o $(OUTPUT_FOLDER)/swap.o
 	@$(LIN) $(LFLAGS) $(OUTPUT_FOLDER)/*.o -o $(OUTPUT_FOLDER)/kernel
 	@echo Linking object files and generate elf32...
 	@rm -f $(OUTPUT_FOLDER)/*.o

@@ -46,6 +46,7 @@ loader_entrypoint:         ; the loader label (defined as entry point in linker 
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE], eax
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xC00], eax
 
+    ; PD[1023] -> page directory itself (recursive mapping), page table i visible at 0xFFC00000 + i*0x1000
     mov eax, _paging_kernel_page_directory - KERNEL_VIRTUAL_BASE
     or eax, 0x3
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xFFC], eax

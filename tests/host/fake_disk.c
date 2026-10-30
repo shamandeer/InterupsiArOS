@@ -4,7 +4,7 @@
 #include <string.h>
 #include "header/driver/disk.h"
 
-#define FAKE_DISK_SIZE (4u * 1024u * 1024u)
+#define FAKE_DISK_SIZE (8u * 1024u * 1024u)
 
 static uint8_t disk[FAKE_DISK_SIZE];
 
@@ -37,7 +37,8 @@ bool fake_disk_load(const char *path) {
     FILE *f = fopen(path, "rb");
     if (f == NULL)
         return false;
+    memset(disk, 0, sizeof(disk));
     size_t n = fread(disk, 1, sizeof(disk), f);
     fclose(f);
-    return n == sizeof(disk);
+    return n >= 4u * 1024u * 1024u; // 4 MiB ext2 image is enough, swap area stays zero
 }

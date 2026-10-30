@@ -21,6 +21,7 @@
 #define RECURSIVE_PAGE_TABLES_VIRTUAL_ADDRESS 0xFFC00000u
 #define RECURSIVE_PAGE_DIRECTORY_INDEX 1023u
 #define KERNEL_VIRTUAL_BASE 0xC0000000
+#define PAGING_INVALID_FRAME 0xFFFFFFFFu
 
 // Maximum usable page frame. Default count: 128 MiB / 4 KiB = 32768 frames
 #define PAGE_FRAME_MAX_COUNT ((SYSTEM_MEMORY_MB << 20) / PAGE_FRAME_SIZE)
@@ -137,14 +138,19 @@ struct PageTable {
 /**
  * Containing page manager states.
  * 
- * @param page_frame_map Keeping track empty space. True when the page frame is currently used
- * ...
+ * @param page_frame_map        Keeping track empty space. True when the page frame is currently used
+ * @param free_page_frame_count Number of false entries in page_frame_map
+ * @param frame_vaddr           Page-aligned virtual address owning the frame, valid when frame_swappable is true
+ * @param frame_swappable       True when the frame may be evicted to swap. Kernel and page table frames are always false
  */
 struct PageManagerState {
     bool     page_frame_map[PAGE_FRAME_MAX_COUNT];
     uint32_t free_page_frame_count;
-    // TODO: Add if needed ...
+    uint32_t frame_vaddr[PAGE_FRAME_MAX_COUNT];
+    bool     frame_swappable[PAGE_FRAME_MAX_COUNT];
 } __attribute__((packed));
+
+extern struct PageManagerState page_manager_state;
 
 
 
@@ -205,10 +211,19 @@ struct PageDirectory *paging_get_current_page_directory_addr(void);
 
 /* --- Memory Management --- */
 /**
- * Check whether a certain amount of physical memory is available
- * 
- * @param amount Requested amount of physical memory in bytes
- * @return       Return true when there's enough free memory available
+ * Take one free physical frame: mark it used and decrement free_page_frame_count.
+ * When RAM is full, call swap_out_one() once and retry.
+ * Caller must set frame_swappable (and frame_vaddr if swappable) for the returned frame.
+ *
+ * @return Frame number, or PAGING_INVALID_FRAME when RAM is full and swap out failed
+ */
+uint32_t paging_find_free_frame(void);
+
+/**
+ * Check whether a certain amount of memory is available, counting free frames and free swap slots
+ *
+ * @param amount Requested amount of memory in bytes
+ * @return       Return true when free frames + free swap slots is enough
  */
 bool paging_allocate_check(uint32_t amount);
 
