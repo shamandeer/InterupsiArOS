@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include "header/memory/paging.h"
 #include "header/stdlib/string.h"
+#include "header/memory/swap.h"
 
 /**
  * _paging_kernel_page_directory and _paging_kernel_page_table is initialized on kernel-entrypoint.s
@@ -41,25 +42,19 @@ struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t
     else {
         if (check_only) return NULL;
     }
-    for (uint32_t page_frame_number = KERNEL_RESERVED_PAGE_FRAME_COUNT;
-         page_frame_number < PAGE_FRAME_MAX_COUNT;
-         page_frame_number++) {
-        if (!page_manager_state.page_frame_map[page_frame_number]) {
-            page_manager_state.page_frame_map[page_frame_number] = true;
-            page_manager_state.free_page_frame_count--;
-            dir_entry->flag = (struct PageDirectoryEntryFlag) {
-                .present_bit = true,
-                .write_bit = true,
-                .us_bit = true,
-            };
-            dir_entry->page_table_base_address = page_frame_number;
-            struct PageTable *page_table = (struct PageTable *)(RECURSIVE_PAGE_TABLES_VIRTUAL_ADDRESS + page_directory_index * PAGE_FRAME_SIZE);
-            flush_single_tlb(page_table);
-            memset(page_table, 0, PAGE_FRAME_SIZE);
-            return page_table;
-        }
-    }
-    return NULL;
+    uint32_t page_frame_number = paging_find_free_frame();
+    if (page_frame_number == PAGING_INVALID_FRAME) return NULL;
+    page_manager_state.frame_swappable[page_frame_number] = false; // page table must never be swapped out
+    dir_entry->flag = (struct PageDirectoryEntryFlag) {
+        .present_bit = true,
+        .write_bit = true,
+        .us_bit = true,
+    };
+    dir_entry->page_table_base_address = page_frame_number;
+    struct PageTable *page_table = (struct PageTable *)(RECURSIVE_PAGE_TABLES_VIRTUAL_ADDRESS + page_directory_index * PAGE_FRAME_SIZE);
+    flush_single_tlb(page_table);
+    memset(page_table, 0, PAGE_FRAME_SIZE);
+    return page_table;
 }
 
 void update_page_table_entry(
@@ -81,13 +76,30 @@ void flush_single_tlb(void *virtual_addr) {
     asm volatile("invlpg (%0)" : /* <Empty> */ : "b"(virtual_addr): "memory");
 }
 
-
 /* --- Memory Management --- */
+static uint32_t take_free_frame(void) {
+    for (uint32_t frame = KERNEL_RESERVED_PAGE_FRAME_COUNT; frame < PAGE_FRAME_MAX_COUNT; frame++) {
+        if (!page_manager_state.page_frame_map[frame]) {
+            page_manager_state.page_frame_map[frame] = true;
+            page_manager_state.free_page_frame_count--;
+            return frame;
+        }
+    }
+    return PAGING_INVALID_FRAME;
+}
+
+uint32_t paging_find_free_frame(void) {
+    uint32_t frame = take_free_frame();
+    if (frame == PAGING_INVALID_FRAME && swap_out_one(paging_get_current_page_directory_addr()))
+        frame = take_free_frame();
+    return frame;
+}
+
 // TODO: Implement
 bool paging_allocate_check(uint32_t amount) {
     // round up
     uint32_t frame_req = (amount + PAGE_FRAME_SIZE - 1) / PAGE_FRAME_SIZE;
-    return frame_req <= page_manager_state.free_page_frame_count;
+    return frame_req <= page_manager_state.free_page_frame_count + swap_free_slot_count();
     // TODO: done
 }
 
@@ -101,22 +113,21 @@ bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtu
     if (!page_table) return false;
     // prevent overwrite kalo semisal ternyata udah dialokasiin
     if (page_table->table[page_table_index].flag.present_bit) return false;
+    // page still exists, only its content is on disk
+    if (pte_is_swapped(&page_table->table[page_table_index])) return false;
 
-    for (uint32_t frame = KERNEL_RESERVED_PAGE_FRAME_COUNT; frame < PAGE_FRAME_MAX_COUNT; frame++) {
-        if (!page_manager_state.page_frame_map[frame]) {
-            page_manager_state.page_frame_map[frame] = true;
-            page_manager_state.free_page_frame_count--;
-            struct PageTableEntryFlag flag = {
-                .present_bit = true,
-                .write_bit = true,
-                .us_bit = true
-            };
-            void *physical_addr = (void *) (frame * PAGE_FRAME_SIZE);
-            update_page_table_entry(page_dir, physical_addr, virtual_addr, flag);
-            return true;
-        }
-    }
-    return false;
+    uint32_t frame = paging_find_free_frame();
+    if (frame == PAGING_INVALID_FRAME) return false;
+    page_manager_state.frame_swappable[frame] = true;
+    page_manager_state.frame_vaddr[frame]     = (uint32_t) virtual_addr & ~(PAGE_FRAME_SIZE - 1);
+    struct PageTableEntryFlag flag = {
+        .present_bit = true,
+        .write_bit = true,
+        .us_bit = true
+    };
+    void *physical_addr = (void *) (frame * PAGE_FRAME_SIZE);
+    update_page_table_entry(page_dir, physical_addr, virtual_addr, flag);
+    return true;
     /**
      * TODO (DONE?): Find free physical frame and map virtual frame into it
      * - Find free physical frame in page_manager_state.page_frame_map[] using any strategies
@@ -135,12 +146,22 @@ bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_a
     // cek dulu biar bisa rollback semisal get_page_table-nya gagal jadi state-nya ga keubah
     struct PageTable *page_table = paging_get_page_table(page_dir, page_directory_index, true);
     if (!page_table) return false;
-    
-    if (!page_table->table[page_table_index].flag.present_bit) return false;
+    volatile struct PageTableEntry *pte = &page_table->table[page_table_index];
+
+    // swapped page has no frame, release its slot (not present, so nothing in TLB)
+    if (pte_is_swapped(pte)) {
+        swap_slot_free(pte_get_swap_slot(pte));
+        *pte = (struct PageTableEntry) {0};
+        return true;
+    }
+
+    if (!pte->flag.present_bit) return false;
     else {
-        uint32_t frame_number = page_table->table[page_table_index].physical_page_base_address;
-        page_table->table[page_table_index].flag.present_bit = false;
+        uint32_t frame_number = pte->physical_page_base_address;
+        *pte = (struct PageTableEntry) {0}; // whole entry, so swapped bit never lingers
         page_manager_state.page_frame_map[frame_number] = false;
+        page_manager_state.frame_vaddr[frame_number] = 0;
+        page_manager_state.frame_swappable[frame_number] = false;
         page_manager_state.free_page_frame_count++;
         flush_single_tlb(virtual_addr);
     }
