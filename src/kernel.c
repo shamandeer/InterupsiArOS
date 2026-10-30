@@ -20,8 +20,6 @@ void kernel_setup(void) {
     framebuffer_set_cursor(0, 0);
     initialize_filesystem_ext2();
     swap_init();
-
-    paging_allocate_user_page_frame(&_paging_kernel_page_directory, (void *)0x500000);
    
     gdt_install_tss();
     set_tss_register();
