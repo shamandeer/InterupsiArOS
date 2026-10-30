@@ -9,13 +9,15 @@
 #include "header/filesystem/ext2.h"
 #include "header/memory/paging.h"
 #include "header/memory/swap.h"
+#include "header/stdlib/string.h"
 
-#define USER_PROGRAM_BASE      ((uint8_t *) 0)
-#define USER_PROGRAM_MAX_SIZE  0x100000u
-// kernel_execute_user_program() puts user esp at USER_PROGRAM_BASE + 4 MiB - 4
-#define USER_STACK_PAGE        ((uint8_t *) 0x3FF000)
+#define USER_PROGRAM_BASE  ((uint8_t *) 0)
+#define USER_PROGRAM_PAGES 48u
+#define USER_PROGRAM_SIZE  (USER_PROGRAM_PAGES * PAGE_FRAME_SIZE)
+// Matches iret user esp (0x400000 - 4) pushed in kernel_execute_user_program
+#define USER_STACK_TOP     0x400000u
+#define USER_STACK_PAGES   8u
 
-// Print error message at the first row then stop the kernel
 static void kernel_halt_with_error(const char *msg) {
     for (uint8_t col = 0; msg[col] != '\0'; col++)
         framebuffer_write(0, col, msg[col], 0x0C, 0x00);
@@ -36,20 +38,26 @@ void kernel_setup(void) {
     gdt_install_tss();
     set_tss_register();
 
-    // Identity mapping of low memory is removed by kernel-entrypoint.s, so user page (program + stack) must be mapped first
-    if (!paging_allocate_user_page_frame(&_paging_kernel_page_directory, USER_PROGRAM_BASE))
-        kernel_halt_with_error("Error: failed to map user program page");
-    if (!paging_allocate_user_page_frame(&_paging_kernel_page_directory, USER_STACK_PAGE))
-        kernel_halt_with_error("Error: failed to map user stack page");
+    for (uint32_t i = 0; i < USER_PROGRAM_PAGES; i++) {
+        void *vaddr = USER_PROGRAM_BASE + i * PAGE_FRAME_SIZE;
+        if (!paging_allocate_user_page_frame(&_paging_kernel_page_directory, vaddr))
+            kernel_halt_with_error("Error: failed to map user program page");
+    }
+    memset(USER_PROGRAM_BASE, 0, USER_PROGRAM_SIZE);
 
-    // Load flat binary "shell" from root directory into virtual address 0x0
+    for (uint32_t i = 1; i <= USER_STACK_PAGES; i++) {
+        void *vaddr = (void *) (USER_STACK_TOP - i * PAGE_FRAME_SIZE);
+        if (!paging_allocate_user_page_frame(&_paging_kernel_page_directory, vaddr))
+            kernel_halt_with_error("Error: failed to map user stack page");
+    }
+
     struct EXT2DriverRequest req = {
         .buf          = USER_PROGRAM_BASE,
         .name         = "shell",
         .name_len     = 5,
         .parent_inode = ROOT_INODE,
-        .buffer_size  = USER_PROGRAM_MAX_SIZE,
-        .is_directory = false
+        .buffer_size  = USER_PROGRAM_SIZE,
+        .is_directory = false,
     };
     int8_t retcode = read(req);
     if (retcode != 0)

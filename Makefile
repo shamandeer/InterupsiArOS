@@ -1,4 +1,3 @@
-# Compiler & linker
 ASM           = nasm
 
 UNAME_S      := $(shell uname -s)
@@ -15,14 +14,12 @@ II            = genisoimage
 ARCH_CFLAG    =
 endif
 
-# Directory
 SOURCE_FOLDER = src
 OUTPUT_FOLDER = bin
 ISO_NAME      = OS2025
 DISK_NAME     = storage
 QEMU_MEM     ?= 128
 
-# Flags
 WARNING_CFLAG = -Wall -Wextra -Werror
 DEBUG_CFLAG   = -fshort-wchar -g
 STRIP_CFLAG   = -nostdlib -fno-stack-protector -nostartfiles -nodefaultlibs -ffreestanding
@@ -31,7 +28,6 @@ AFLAGS        = -f elf32 -g -F dwarf
 LFLAGS        = -T $(SOURCE_FOLDER)/linker.ld -melf_i386
 IFLAGS        = -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -input-charset utf8 -quiet -boot-info-table
 
-
 run: all
 	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -drive file=$(OUTPUT_FOLDER)/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 all: build
@@ -39,12 +35,9 @@ build: iso
 clean:
 	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user
 
-
-
 disk:
 	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 8M
 
-# host test for ext2 CRUD, fake disk on RAM (no QEMU needed)
 HOST_CC       = cc
 TEST_FOLDER   = tests/host
 TEST_SOURCE   = $(SOURCE_FOLDER)/filesystem/ext2.c $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_ext2.c
@@ -55,7 +48,6 @@ test:
 	@$(HOST_CC) $(TEST_CFLAGS) $(TEST_SOURCE) -o $(OUTPUT_FOLDER)/test_ext2
 	@./$(OUTPUT_FOLDER)/test_ext2 .kit/ch2/sample-image.bin
 
-# host test for swap slot manager & swap page I/O
 SWAP_TEST_SOURCE = $(SOURCE_FOLDER)/memory/swap.c $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_swap.c
 test-swap:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -70,16 +62,19 @@ inserter:
 		$(SOURCE_FOLDER)/external/external-inserter.c \
 		-o $(OUTPUT_FOLDER)/inserter
 
-# user program (flat binary executable + ELF32 for debugging), object files kept in bin/user so they are not linked into kernel
 USER_FOLDER   = $(OUTPUT_FOLDER)/user
 user-shell:
 	@mkdir -p $(USER_FOLDER)
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(USER_FOLDER)/crt0.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/stdlib/string.c -o $(USER_FOLDER)/string.o
 	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/user-shell.c -o $(USER_FOLDER)/user-shell.o
+	@for f in $(SOURCE_FOLDER)/shell/*.c; do \
+		$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables "$$f" -o "$(USER_FOLDER)/shell_$$(basename "$$f" .c).o" || exit 1; \
+	done
 	@$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386 --oformat=binary \
-		$(USER_FOLDER)/crt0.o $(USER_FOLDER)/user-shell.o -o $(OUTPUT_FOLDER)/shell
+		$(USER_FOLDER)/crt0.o $(USER_FOLDER)/user-shell.o $(USER_FOLDER)/string.o $(USER_FOLDER)/shell_*.o -o $(OUTPUT_FOLDER)/shell
 	@$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386 --oformat=elf32-i386 \
-		$(USER_FOLDER)/crt0.o $(USER_FOLDER)/user-shell.o -o $(OUTPUT_FOLDER)/shell_elf
+		$(USER_FOLDER)/crt0.o $(USER_FOLDER)/user-shell.o $(USER_FOLDER)/string.o $(USER_FOLDER)/shell_*.o -o $(OUTPUT_FOLDER)/shell_elf
 	@echo Linking object shell object files and generate flat binary...
 	@size --target=binary $(OUTPUT_FOLDER)/shell
 	@rm -rf $(USER_FOLDER)

@@ -1,25 +1,25 @@
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x00000000; /* Assuming OS will load this program at virtual address 0 */
+    . = 0x00000000;
 
-    /* Put the entrypoint (crt0.o) in the front of executable */
+    /* Keep crt0 _start at offset 0x0 for flat binary Ring 3 entry */
     .text ALIGN(4): {
         [a-z\/]*crt0.o(.text)
         *(.text)
     }
 
-    .data ALIGN(4): {
+    .rodata ALIGN(0x1000): {
+        *(.rodata*)
+    }
+
+    .data ALIGN(0x1000): {
         *(.data)
     }
 
-    .bss ALIGN(4): {
+    .bss ALIGN(0x1000): {
         *(COMMON)
         *(.bss)
-    }
-
-    .rodata ALIGN(4): {
-        *(.rodata*)
     }
 
     _linker_user_program_end = .;
