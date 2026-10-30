@@ -62,6 +62,33 @@ test-swap:
 	@$(HOST_CC) $(HOST_CFLAGS) $(SWAP_TEST_SOURCE) -o $(OUTPUT_FOLDER)/test_swap
 	@./$(OUTPUT_FOLDER)/test_swap
 
+# host test for shell parser, commands and pipeline, syscalls emulated on top of ext2
+SHELL_TEST_SOURCE = $(SOURCE_FOLDER)/filesystem/ext2.c $(filter-out %/syscall.c,$(wildcard $(SOURCE_FOLDER)/shell/*.c)) $(TEST_FOLDER)/fake_disk.c $(TEST_FOLDER)/test_shell.c
+test-shell:
+	@mkdir -p $(OUTPUT_FOLDER)
+	@$(HOST_CC) $(TEST_CFLAGS) $(SHELL_TEST_SOURCE) -o $(OUTPUT_FOLDER)/test_shell
+	@./$(OUTPUT_FOLDER)/test_shell
+
+# user shell: flat binary (shell) for the inserter, ELF (shell_elf) for the debugger
+SHELL_SOURCES = $(wildcard $(SOURCE_FOLDER)/shell/*.c) $(SOURCE_FOLDER)/user-shell.c $(SOURCE_FOLDER)/stdlib/string.c
+SHELL_OBJECTS = $(patsubst $(SOURCE_FOLDER)/%.c,$(OUTPUT_FOLDER)/user/%.o,$(SHELL_SOURCES))
+USER_CRT0     = $(OUTPUT_FOLDER)/user/crt0.o
+USER_LFLAGS   = -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386
+
+$(USER_CRT0): $(SOURCE_FOLDER)/crt0.s
+	@mkdir -p $(dir $@)
+	@$(ASM) $(AFLAGS) $< -o $@
+
+$(OUTPUT_FOLDER)/user/%.o: $(SOURCE_FOLDER)/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -fno-pie $< -o $@
+
+user-shell: $(USER_CRT0) $(SHELL_OBJECTS)
+	@$(LIN) $(USER_LFLAGS) --oformat=binary $^ -o $(OUTPUT_FOLDER)/shell
+	@$(LIN) $(USER_LFLAGS) --oformat=elf32-i386 $^ -o $(OUTPUT_FOLDER)/shell_elf
+	@rm -rf $(OUTPUT_FOLDER)/user
+	@echo Linking user shell, generate flat binary and shell_elf...
+
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/kernel-entrypoint.s -o $(OUTPUT_FOLDER)/kernel-entrypoint.o
