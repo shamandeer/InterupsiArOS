@@ -46,7 +46,7 @@ loader_entrypoint:         ; the loader label (defined as entry point in linker 
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE], eax
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xC00], eax
 
-    mov eax, _paging_kernel_page_table - KERNEL_VIRTUAL_BASE
+    mov eax, _paging_kernel_page_directory - KERNEL_VIRTUAL_BASE
     or eax, 0x3
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xFFC], eax
 

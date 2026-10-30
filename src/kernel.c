@@ -7,6 +7,7 @@
 #include "header/text/framebuffer.h"
 #include "header/driver/keyboard.h"
 #include "header/filesystem/ext2.h"
+#include "header/memory/paging.h"
 
 void kernel_setup(void) {
     load_gdt(&_gdt_gdtr);
@@ -16,30 +17,24 @@ void kernel_setup(void) {
 
     framebuffer_clear();
     framebuffer_set_cursor(0, 0);
-    keyboard_state_activate();
     initialize_filesystem_ext2();
 
-    int row = 0, col = 0;
-    while (true) {
-        char c = 0;
-        get_keyboard_buffer(&c);
-        if (c != 0) {
-            if (c == '\n') {
-                row++;
-                col = 0;
-            } else {
-                framebuffer_write(row, col, c, 0xF, 0);
-                if (col >= 79) {
-                    row++;
-                    col = 0;
-                } else {
-                    col++;
-                }
-            }
-            if (row >= 25) {
-                row = 0;
-            }
-            framebuffer_set_cursor(row, col);
-        }
-    }
+    paging_allocate_user_page_frame(&_paging_kernel_page_directory, (void *)0x500000);
+   
+    gdt_install_tss();
+    set_tss_register();
+
+    paging_allocate_user_page_frame(&_paging_kernel_page_directory, (uint8_t *) 0);
+    struct EXT2DriverRequest request = {
+        .buf = (uint8_t *) 0,
+        .name = "shell",
+        .parent_inode = 2,
+        .buffer_size = 0x100000,
+        .name_len = 5,
+    };
+    read(request);
+
+    set_tss_kernel_current_stack();
+    kernel_execute_user_program((uint8_t *) 0);
+    while (true);
 }
