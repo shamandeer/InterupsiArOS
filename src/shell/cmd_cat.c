@@ -13,9 +13,9 @@ void cmd_cat(int argc, char **argv, struct ShellIO *io) {
     }
 
     const char *path = argv[1];
-    int8_t code = shell_read_file(argv[1], shell_file_buf, sizeof(shell_file_buf));
+    int8_t code = shell_read_file(path, shell_file_buf, sizeof(shell_file_buf));
     if (code) {
-        shell_error("cat", argv[1], shell_read_strerror(code));
+        shell_error("cat", path, shell_read_strerror(code));
         return;
     }
     shell_io_puts(io, shell_file_buf);
