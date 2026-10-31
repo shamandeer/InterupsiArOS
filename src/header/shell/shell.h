@@ -115,4 +115,6 @@ void shell_read_line(char *line, uint32_t cap);
 void shell_execute_line(char *line);
 void shell_run(void);
 
+/* cmd_cat.c */
+
 #endif

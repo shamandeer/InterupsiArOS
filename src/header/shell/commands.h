@@ -9,5 +9,6 @@ void cmd_mkdir(int argc, char **argv, struct ShellIO *io);
 void cmd_grep(int argc, char **argv, struct ShellIO *io);
 void cmd_cp(int argc, char **argv, struct ShellIO *io);
 void cmd_rm(int argc, char **argv, struct ShellIO *io);
+void cmd_cat(int argc, char **argv, struct ShellIO *io);
 
 #endif
