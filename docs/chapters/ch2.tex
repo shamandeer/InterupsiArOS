@@ -1,0 +1,575 @@
+\chapter{Filesystem}
+
+\section{Disk Drivers}
+Pada bagian ini, diimplementasi driver disk ATA (Advanced Technology Attachment) PIO. Satuan data utama yang akan digunakan adalah block, yang akan dijelaskan lebih lanjut di bagian kemudian. Terdapat penambahan pada \texttt{portio.c} berupa instruksi \texttt{in16} dan \texttt{out16}, which is the same instructions yang digunakan untuk menerima dan mengirim data melalui port, tapi kali ini 16-bit untuk memudahkan (katanya). Implementasi ini menggunakan logical block addressing yang menyatakan indeks block.
+
+\section{disk.h dan disk.c}
+
+Pada disk.h, ada beberapa hal yang menarik. Perhatikan bahwa \texttt{BLOCK\_SIZE} didefinisikan sebagai 512 (baca bytes). Terdapat pula tipe data BlockBuffer sebagai representasi dari sebuah block yang terdiri dari byte buffer berukuran \texttt{BLOCK\_SIZE}.
+
+Pada disk.c, diimplementasikan beberapa fungsi yang kaitannya dengan ATA busy waiting, DRQ waiting, send commands, cukup tahu saja. Dagingnya di bagian sini adalah \texttt{read\_blocks()} dan \texttt{write\_blocks()}. Implementasi cukup tahu aja. Fungsi \texttt{read\_blocks()}:
+
+\begin{lstlisting}[language=c]
+    void read_blocks(void *ptr, uint32_t logical_block_address, uint8_t block_count);
+\end{lstlisting}
+
+berperan mengambil data pada logical block address tertentu sebanyak block count dan menyimpannya pada pointer.
+
+Fungsi \texttt{write\_blocks()} juga kurang lebih mirip:
+
+\begin{lstlisting}[language=c]
+    void write_blocks(void *ptr, uint32_t logical_block_address, uint8_t block_count);
+\end{lstlisting}
+
+berperan menulis data yang berada di pointer ke logical block address sebanyak block count.
+
+Tambahan juga bahwa karena block berukuran 512 bytes, LBA pertama dimulai dari memory 0 hingga 511 (karena zero-indexed) dari 0x0 hingga 0x1FF, LBA kedua dari 512 sampai 1023, (0x200 hingga 0x3FF), dst.
+
+\section{The Source of Every Filesystem Knowledge}
+
+Note: Bagian ini fokus ke materi. 
+
+Block adalah unit dasar penyimpanan dalam filesystem. Pada filesystem ini, ukuran block adalah 512 bytes. Segala hal essentially disimpan di dalam block. Lalu, bagaimana block yang sudah dipakai di-track? Caranya adalah menggunakan bitmap block. Inode adalah struktur data yang menyimpan metadata terkait suatu file (lebih lengkap di bagian Inode sendiri). Inode juga ada bitmapnya. Untuk definisi-definisi lain, rasanya cukup sama dengan di modul saja. Ada superblock yang menyimpan informasi global tentang block-block dan inode-inode, ada block group yang terdiri dari beberapa block.
+
+Block group memuat superblock (group pertama saja), group descriptor, block bitmap, inode bitmap, inode table, dan data blocks. Layoutnya kurang lebih seperti ini
+
+\begin{lstlisting}
+block 0        boot sector (legacy)
+block 1        superblock          (44 byte terpakai)
+block 2        BGD table           (256 byte terpakai)
+block 3        block bitmap grup 0
+block 4        inode bitmap grup 0
+block 5..20    inode table grup 0  (16 block)
+block 21..     data blocks grup 0
+block 1024..   grup 1, dan seterusnya (8 grup x 1024 block = 8192 block)
+\end{lstlisting}
+(ini dibuat kakas jadi koreksi lagi aja, ya secara garis besar mirip-mirip lah)
+
+
+\subsection{Filesystem Constants}
+
+Pertama-tama, kita berkenalan dengan konstanta-konstantanya terlebih dahulu. Boot sector berada pada block ke-0, yang di kasus ini 
+
+\begin{table}[htbp]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lll}
+\hline
+Konstanta                   & Nilai             & Penjelasan                                                        \\ \hline
+BOOT\_SECTOR                & 0                 & Indeks block BOOT\_SECTOR. fs\_signature akan dimasukkan ke sini. \\ \hline
+DISK\_SPACE                 & 4194304 bytes     & Disk space ukuran 4 MiB. Sama Dip diganti jadi 8 kyknya           \\ \hline
+INODE\_SIZE                 & 70 bytes          & sizeof(EXT2Inode)                                                 \\ \hline
+INODES\_PER\_TABLE          & 7 inode per block & (BLOCK\_SIZE / INODE\_SIZE)                                       \\ \hline
+GROUPS\_COUNT               & 8 group           & BLOCK\_SIZE / sizeof(struct EXT2BlockGroupDescriptor) / 2u       \\ \hline
+BLOCKS\_PER\_GROUP          & 1024 block        & (DISK\_SPACE / BLOCK\_SIZE) / GROUPS\_COUNT                       \\ \hline
+INODES\_TABLE\_BLOCK\_COUNT & 16 block          & Jumlah tabel inode dalam satu group                               \\ \hline
+INODES\_PER\_GROUP          & 112 inode         & INODES\_PER\_TABLE * INODES\_TABLE\_BLOCK\_COUNT                  \\ \hline
+ROOT\_INODE                 & 2                 & Inode nomor 2 sebagai root                                        \\ \hline
+DIRECT\_BLOCKS              & 12                & Direct pointer pada i\_block                                      \\ \hline
+POINTERS\_PER\_BLOCK        & 64                & Jumlah pointer block dalam indirect block \\ \hline                        
+\end{tabular}
+}
+\end{table}
+
+\subsection{Superblock, BGD, BGDT}
+
+Seperti yang telah dijelaskan sebelumnya, Superblock (EXT2Superblock) memuat data-data global terkait semua block seperti jumlah inode, jumlah block, nomor root inode, jumlah block free, jumlah inode free, dll. Isinya pretty straightforward berdasarkan yang ada di header.
+
+Block Group Descriptor (EXT2BlockGroupDescriptor) menyimpan atribut-atribut seperti id bitmap dan inode table group tersebut (doesn't actually store the bitmaps and inode tables, tapi nunjuk ke block pada group yang menyimpan ybs). BGD juga nyimpen free blocks count, free inodes count, jumlah inode yang digunakan untuk directory, dll. BGD disimpan dalam BGDT, sebuah tabel yang menyimpan sejumlah \texttt{GROUPS\_COUNT} BGD. Di InterupsiArOS, table tersebut hanya disimpan di group 0, tapi tetap mewakili setiap group obv.
+
+\subsection{Bitmap}
+Bitmap berukuran 1 block dan memuat data mengenai apakah suatu block/inode pada group terpakai atau tidak. Jika terpakai nilainya 1, jika tidak 0. Dalam block 512 byte, 1 bit mewakili item ke-n.
+
+\subsection{Inode dan Inode Table}
+
+Inode (EXT2Inode) pada sebuah group memiliki posisi dimulai dari tabel inode group tersebut. Inode dikenali dengan nomornya (misal root inode adalah 2).
+
+\begin{table}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{|l|l|}
+\hline
+Member         & Penjelasan                                         \\ \hline
+i\_mode        & Filetype dan access right                          \\ \hline
+i\_size        & Ukuran file (bytes)                                \\ \hline
+i\_blocks      & UKURAN blocks yang dipakai                         \\ \hline
+i\_block{[}{]} & block yang mengandung data yang ditunjuk inode ini \\ \hline
+\end{tabular}%
+}
+\end{table}
+
+\texttt{i\_mode} akan bernilai \texttt{EXT2\_S\_IFREG} 0x8000 jika regular file dan \texttt{EXT2\_S\_IFDIR} 0x4000 jika adalah directory.
+
+Inode menggunakan direct block pada 12 pointer pertama yang menunjuk langsung ke block; pointer ke-13 menggunakan indirect block menunjuk ke block yang menunjuk ke direct block; 14 doubly-indirect; 15 triply-indirect.
+
+Inode Table adalah tabel berii Inode berjumlah \texttt{INODES\_PER\_GROUP}.
+
+\subsection{Directory Entry}
+
+Bagian ini cukup abstrak bahkan kami saat ini masih bingung bagaimana menjelaskannya. Ibarat kata directory entry (direntry) adalah di mana kita bisa menemukan sebuah inode jika kita memiliki namanya. Walaupun namanya directory entry, file yang bukan directory juga memiliki ini. Perhatikan juga bahwa selalu ada . dan .. di setiap directory
+
+Jenis file type ada juga
+
+\begin{lstlisting}
+#define EXT2_FT_UNKNOWN 0 // Unknown File Type
+#define EXT2_FT_REG_FILE 1 // Regular File
+#define EXT2_FT_DIR 2 // Directory
+#define EXT2_FT_NEXT 3 // Character Special File
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{|l|l|}
+\hline
+Member         & Penjelasan                                         \\ \hline
+inode        & Nomor inode yang merepresentasikan entry, 0 jika unused                        \\ \hline
+rec\_len        & jarak ke next entry (essentially isi dari struct)                            \\ \hline
+name\_len        & panjang nama                        \\ \hline
+file\_type & file type \\ \hline
+\end{tabular}%
+}
+\end{table}
+
+BUTBUTBUTBUT. Di luar DirectoryEntry itu ada name dan padding supaya kelipatan 4.
+
+\section{Daging}
+
+Penjelasan TIAP kode ext2.c yang jumlah halamannya hampir 1000 itu.
+Note: Sepertinya waste of space dan overdocumented kalo copas semuanya, jadi silakan compare saja dengan yang di source code.
+Note 2: Beberapa penjelasan akan JAUH lebih panjang daripada penjelasan lain.
+
+Sebelumnya, ada tambahan lagi constant dan static variables. Constant-nya seperti \texttt{GROUP0\_FIRST\_META} yang merupakan indeks block pada group setelah boot sector, superblock, dan tabel bgd. Ada juga \texttt{ROOT\_INODE} yang kami pilih jadi 2 (1 reserved). Ada juga \texttt{GROUP\_META\_BLOCKS} which is offset indeks block setelah block bitmap, inode bitmap, dan 16 inode table tadi.
+
+\begin{lstlisting}
+char *get_entry_name(void *entry);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Memperoleh POSISI nama directory entry dengan menambahkan address entry dengan \texttt{sizeof(EXT2DirectoryEntry)} which is headernya.
+
+\begin{lstlisting}
+uint16_t get_entry_record_len(uint8_t name_len);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Memperoleh \texttt{rec\_len} sebuah entry dengan menambahkan ukuran header dan panjang nama. Dibulatkan ke atas menuju kelipatan 4
+
+\begin{lstlisting}
+uint32_t inode_to_bgd(uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Inode berada di group berapa? Note nomor inode tidak zero-indexed jadi harus dikurangi satu dulu. Berlaku untuk seterusnya
+
+\begin{lstlisting}
+uint32_t inode_to_local(uint32_t inode)
+\end{lstlisting}
+
+\textbf{Penjelasan}: Inode berada di indeks ke-berapa dalam group? Obv zero-indexed
+
+\begin{lstlisting}
+void init_directory_table(struct EXT2Inode *node, uint32_t inode, uint32_t parent_inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mengisi directory baru pada node dengan '.' (inode) dan '..' (parent inode). Perhatikan penggunaan buffer untuk memudahkan manipulasi memori dan operasi memori seperti memcpy, memset (kalo diisi 0 biar ngilangin garbage data), dll untuk kedepannya juga. Directory entry untuk self dan parent disusun, note yang parent ukurannya 500 soalnya harus ngisi block. Kemudian, isi data di node dan write ke block.
+
+\begin{lstlisting}
+bool is_empty_storage(void);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Melakukan memcmp fs signature dengan block di BOOT SECTOR.
+
+\begin{lstlisting}
+static void set_bit(struct BlockBuffer *bitmap, uint32_t index)
+\end{lstlisting}
+
+\textbf{Penjelasan}: Menandai bit ke-n pada bitmap sebagai used. Hanya bisa per byte, makanya formulasinya gitu.
+
+\begin{lstlisting}
+void create_ext2(void);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Perlu diketahui block 1 itu perlu kita set signature, superblock, bgd table, dan juga data block pertama. Jadi logicnya kelihatan lah ya harusnya buat block 0 bakal beda sendiri
+
+\begin{enumerate}
+    \item Set up block zero (nol semua), ini buat bersihin inode table nanti; tulis fs signature ke block 0 (boot sector); tentukan root block yaitu indeks data block setelah metadata pada group 0.
+    \item Loop for all groups (0 s.d. 7)
+    \item Untuk group 0, basenya 3 dan used blocks 3 + 18 + 1 (dari root block directory) jadi 22; untuk group 1-7 basenya g * blocks per group, used blocks cukup 18 dari group meta blocks aja.
+    \item Isi bgd-nya. Standar aja sih, bitmap offset, table offset, free blocks count, free inodes count (includes root inode sama reserved), used dirs satu karena root directory
+    \item Pake block buffer bersih, set bit sebanyak used blocks, lalu write ke bitmap block
+    \item Pake block buffer bersih, set bit di inode 1 (index 0) dan di root inode, lalu write ke bitmap inode
+    \item Bersihkan inode table pakai block zero
+    \item Buat buffer bersih, copy isi group descriptor table ke buffer, lalu write ke LBA 2
+    \item Isi-isi superblock, standar lah. Write ke LBA 1.
+    \item Kita udah taro signature, superblock, bgdt. Sekarang obviously perlu ada inode yang refer to root directory. Jadi buat itu lah, standar standar aja.
+    \item Inode udah ada, tapi belom ditaroh infonya di inode table. Ambil table block dengan offsetnya, trus write di table block. Alasan ada kosongan di buffer adalah untuk reserved
+\end{enumerate}
+
+\begin{lstlisting}
+static bool is_superblock_valid(void);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Generic checking aja, \#kurakura\#
+
+\begin{lstlisting}
+void initialize_filesystem_ext2(void);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Cek apakah storage empty. Jika empty maka create ext2. Load block 1 ke superblock static,cek superblock apakah valid, jika tidak sama juga create ext2. Load block 2 ke gdt static. Hitung ulang free counters just in case ada inkonsistensi
+
+Tambahan: \texttt{MAX\_NODE\_BLOCKS} adalah jumlah maksimal data block yang bisa dialamatkan satu inode (direct block + single indirect + double indirect). Triply indirect gada karena yaa ga perlu juga ukuran disknya cukup kecil. Struct \texttt{BlockCursor} basically sebagai penunjuk kita udah di mana saat kita iterate di blocks-nya, ada \texttt{buf} (posisi di buffer sekarang), \texttt{bytes\_left} (sisa byte), dan \texttt{blocks\_left} (sisa data block).
+
+\begin{lstlisting}
+static bool test_bit(struct BlockBuffer *bitmap, uint32_t index);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mirip set bit, tapi ngecek apakah bit ke-n pada bitmap bernilai 1 (used).
+
+\begin{lstlisting}
+static void clear_bit(struct BlockBuffer *bitmap, uint32_t index);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mirip set bit dan test bit, tapi ya sesuai namanya di-unset
+
+\begin{lstlisting}
+static uint32_t inode_table_block(uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Menentukan inode berada di block ke-berapa dalam suatu group.
+
+\begin{lstlisting}
+static uint32_t inode_table_offset(uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Offset bytes inode dari awal block.
+
+\begin{lstlisting}
+static bool is_inode_allocated(uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Kalo nomor inode 0 atau melebihi jumlah total inode langsung false. Otherwise baca inode bitmap block ke block buffer, lalu \texttt{test\_bit}.
+
+\begin{lstlisting}
+struct EXT2DirectoryEntry *get_directory_entry(void *ptr, uint32_t offset);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mencari entry pada ptr + offset. ptr di-cast ke (uint8\_t*) supaya offset-nya per bytes.
+
+\begin{lstlisting}
+struct EXT2DirectoryEntry *get_next_directory_entry(struct EXT2DirectoryEntry *entry);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mencari directory entry selanjutnya dengan menggunakan get directory entry dengan offset rec len entry itu sendiri.
+
+\begin{lstlisting}
+uint32_t get_dir_first_child_offset(void *ptr);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mencari offset child pertama sebuah directory. Karena udah ada '.' dan '..', jadi ambil dari offset rec len self dan parent.
+
+\begin{lstlisting}
+static bool is_entry_in_block(struct BlockBuffer *block, uint32_t offset);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mengecek apakah ada entry yang valid di offset block tersebut. Kalau offset dan header melebihi block size return false (krn invalid). Lakukan get directory entry pada block dengan offset dan cek alignment, ukuran, etc. valid.
+
+\begin{lstlisting}
+static bool is_block_empty(struct BlockBuffer *block);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Cek semua entry di block, kalo ada yang inode-nya gak 0, false.
+
+\begin{lstlisting}
+static bool is_entry_name(struct EXT2DirectoryEntry *entry, const char *name, uint8_t name_len);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mengecek apakah entry ini punya nama yang dicari. Inode harus terpakai (non zero), panjang nama sama, dan isi namanya sama.
+
+\begin{lstlisting}
+static bool is_dot_entry(const char *name, uint8_t name_len);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mengecek apakah namanya '.' atau '..'.
+
+\begin{lstlisting}
+static void fill_directory_entry(struct EXT2DirectoryEntry *entry, uint32_t inode, const char *name, uint8_t name_len, uint8_t file_type);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mengisi inode, panjang nama, file type, dan nama pada entry, lalu sisa ruang sampai akhir rec len dibuat 0 biar clean. Perhatikan rec len ga di-update di sini.
+
+\begin{lstlisting}
+void load_node(struct EXT2Inode *node, uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Baca block inode table yang memuat inode, lalu copy inode di offset-nya ke node.
+
+\begin{lstlisting}
+void sync_node(struct EXT2Inode *node, uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Kayak yang bagian akhir create ext2. Essentially write node ke inode table-nya, tapi jangan sampai overwrite inode yang lain di block. Caranya dengan nyimpen isi block ke block buffer, terus ngisi offset buffer dengan node, terus di-write
+
+\begin{lstlisting}
+void commit_metadata(void);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Tulis superblock dan BGDT ke disk dari memory. Perlu ada karena yaa ofc you're gonna save the metadata after doing CRUD operations.
+
+\begin{lstlisting}
+uint32_t allocate_node(bool is_directory);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Cari inode free di semua group dengan mengecek apakah tersedia lewat bitmap-nya (first fit oooooo). Kalo ketemu, set bit buat bitmap, write bitmap group, kurangi free inode di bgd dan superblock. Mengembalikan 0 kalo udah gaada lagi yg unallocated. Kalo tersedia, return nomor inode keberapa.
+
+\begin{lstlisting}
+void deallocate_node(uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Kalo root inode dan inode yang belum dialokasikan ignore. Load node dari disk, free blocks pake deallocate blocks (dijelasin nanti), baca bitmap dan clear bit pada inode bitmap also write, tambah free counter, kalo node directory tambahin dirs count, trus nol-kan node pada inode table.
+
+\begin{lstlisting}
+uint32_t allocate_block(uint32_t prefered_bgd);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mirip allocate node tapi yaa buat block dan berdasarkan berdasarkan block mulai dari mana, dan bisa muter juga. Return block kalau ga penuh, 0 kalo penuh.
+
+\begin{lstlisting}
+void deallocate_block(uint32_t block);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Sesuai namanya deallocate block, kalo block 0 atau di luar range ignore, kalo di bitmap-nya belom allocated juga ignore. Sisanya standar-standar lah.
+
+\begin{lstlisting}
+static void recount_free_counters(void);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Hitung ulang free blocks dan free inodes tiap group dari bitmap, simpan ke BGD dan superblock. Fungsinya kalo misal ada operasi yang belum sempat melakukan commit metadata.
+
+\begin{lstlisting}
+static uint32_t count_free_blocks(void);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Menghitung free blocks tapi dari bitmap-nya.
+
+\begin{lstlisting}
+static uint32_t count_pointer_blocks(uint32_t blocks);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Menghitung berapa pointer yang dibutuhkan untuk menyimpan jumlah data block tertentu
+Kalo sampai 12 block, 0 karena direct semua. Kalo dikurangi 12 masih di bawah pointers per block, jadi 1 (single indirect). Kalo misal dikurangi pointers ke block masih ada, jadi double indirect sehingga 2 + ceil(blocks / pointers per block). Kalo kata claude
+
+\begin{enumerate}
+    \item 1 block single indirect (sudah terisi penuh, tetap dihitung),
+    \item 1 block puncak double indirect,
+    \item 1 block tingkat dua untuk setiap 128 data yang tersisa.
+\end{enumerate}
+
+\begin{lstlisting}
+static uint32_t write_block_tree(struct BlockCursor *cursor, uint32_t depth, uint32_t prefered_bgd);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Write block secara tree recursive berdasarkan depth-nya. Pakai bantuan BlockCursor.
+\begin{enumerate}
+    \item Alokasikan satu block untuk node tree ini. 
+    \item Kalau depth-nya 0, ambil size at most 1 block at least bytes left dari cursor. Move buffer cursor-nya sebanyak size, kurangin bytes left dan blocks left, terus write ke block. Kalo misal buffer di BlockCursor null tulis nol di block tersebut (ini buat directory) dan return nomornya.
+    \item Kalau depth lebih dari 0, siapin array pointer dan isi pake write block tree dengan depth-1, sampai sebanyak pointers per block atau blocks left di cursor sudah habis, terus write.
+\end{enumerate}
+
+\begin{lstlisting}
+static void read_block_tree(struct BlockCursor *cursor, uint32_t block, uint32_t depth);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Kyk write block tree tapi read. Kalo depth 0, baca data block dan copy ke cursor buffer. Atribut cursor atur-atur. Perhitungan rekursi kalo depth > 0 kurang lebih sama sih.
+
+\begin{lstlisting}
+static void deallocate_block_tree(uint32_t block, uint32_t depth, uint32_t *blocks_left);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Kyk write and read block tree tapi buat dealloc block instead. Kalo depth 0, cukup kurangin blocks left. Kalo nggak yang penting bukan block 0, itu di read blocks dulu trus deallocate block tree secara rekursif. Di akhir, secara umum dipake deallocate block.
+
+\begin{lstlisting}
+void deallocate_blocks(void *loc, uint32_t blocks);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Deallocate block sebanyak blocks yang ingin di-free pada suatu node blocks (loc adalah node->i\_block). Apparently di-copy dulu dari loc ke array location supaya 4-byte aligned.
+
+\begin{lstlisting}
+bool allocate_node_blocks(void *ptr, struct EXT2Inode *node, uint32_t prefered_bgd);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Alokasiin blocks berdasarkan node yang member-nya udh terdefinisi.
+\begin{enumerate}
+    \item Return false kalo jumlah block melebihi MAX NODE BLOCKS atau data block + pointer block lebih banyak dari free. Kalo gagal ada yang teralokasi, ga butuh rollback
+    \item Buat cursor berdasarkan yang didefinisikan di node, set i\_block as 0 dulu.
+    \item Isi 12 direct block dengan write block tree depth 0.
+    \item Kalo perlu indirect block, write block tree rekursif juga.
+\end{enumerate}
+Masih harus sync node biar kesave ke disk
+
+\begin{lstlisting}
+void read_node_blocks(void *ptr, struct EXT2Inode *node);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mirip allocate node blocks, tapi buat read node blocks.
+
+\begin{lstlisting}
+bool is_directory_empty(uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Iterate semua block (direct only) inode dan cek semua entry-nya. Kalau inode di-entrynya ga ketemu nol langsung false. Offset awal udh mempertimbangkan '.' dan '..' pake get dir first child offset.
+
+\begin{lstlisting}
+bool load_directory_node(struct EXT2Inode *node, uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Load inode ke node. Validasi sebelumnya kalo udh/belom dialokasi, terus dicek juga apakah i mode nya directory (EXT\_S\_IFDIR), i blocksnya lebih dari 0 kah, i block 0 tidak 0 kah.
+
+\begin{lstlisting}
+uint32_t find_directory_entry(uint32_t dir_inode, const char *name, uint8_t name_len);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mencari folder dengan nama tertentu di dalam directory. Load dir inode kemudian iterate untuk tiap direct blocks-nya, lakukan pencarian tiap entry dan return inode-nya kalo entry name dan file type entry-nya sesuai (\texttt{EXT2\_FT\_DIR})
+
+\begin{lstlisting}
+int32_t get_file_type(uint32_t dir_inode, const char *name, uint8_t name_len);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mirip find directory entry, tapi return file-type jika sesuai namanya.
+
+\begin{lstlisting}
+uint32_t find_file_entry(uint32_t dir_inode, const char *name, uint8_t name_len);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Mirip find directory entry, tapi nyari entry yang punya tipe file alias yang kodenya (\texttt{EXT2\_FT\_REG})
+
+\begin{lstlisting}
+bool add_directory_entry(uint32_t dir_inode, uint32_t inode, const char *name, uint8_t name_len, uint8_t file_type);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Menambahkan entry baru ke directory. Suatu entry bisa punya rec len yang lebih besar dari name len-nya, dan sisa ruang di ekornya untuk entry yang baru. Note: cuma direct blocks aja
+
+\begin{enumerate}
+    \item Hitung ukuran entry baru pakai get entry record len (needed), terus load directory inode.
+    \item Cek tiap direct block dan entry di dalamnya. Hitung used yaitu ukuran rec len entry tersebut (0 kalo unallocated).
+    \item Kalo misal rec len entry >= jumlah ruang used + needed, berarti muat. Kalo muat dan used ga 0, entry lama dipotong jadi seukuran used, sisanya jadi entry baru after entry lama. Kalau used-nya 0, langsung pake entry tersebut.
+    \item Isi entry dengan fill directory entry, write block, dan return true.
+    \item Return false kalau memang melebihi direct blocks atau ga bisa allocate block lagi
+    \item Kalo emang ga ada ruang buat entry baru tapi bisa nambah block, kita bisa allocate block aja. Entry dibuat sepanjang block size, terus di-fill dan write. Jangan lupa sync node dan melakukan penyesuaian lain sewajarnya.
+\end{enumerate}
+
+\begin{lstlisting}
+static void shrink_directory(struct EXT2Inode *dir, uint32_t dir_inode, uint32_t index);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Free block directory pada index tertentu. Block terakhir dipindahkan ke block kosong. Sesuaikan atribut pada dir, lalu sync node. Ga perlu ngurut karena directory, bukan file reguler.
+
+\begin{lstlisting}
+bool remove_directory_entry(uint32_t dir_inode, uint32_t target_inode, const char *name, uint8_t name_len);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Sesuai namanya, untuk menghapus directory entry tertentu. Perlu target inode karena nama folder dan file bisa sama tapi harus bisa dibedain.
+
+\begin{enumerate}
+    \item Kalau is dot entry ('.' atau '..') prevent penghapusan, lgsg return
+    \item Iterate tiap direct block dan entry di dalamnya, keep track of prev kyk linked list aja
+    \item Kalau entry sesuai target inode dan namanya bener, cek dulu prev-nya. Kalo prev-nya NULL alias ketemu pertama, set inode-nya as 0 aja. Kalo ngga, tambahin rec len-nya prev sama rec len-nya entry. Selebihnya write ke block inode dir.
+    \item Kalo bukan block pertama dan udah kosong, shrink directory (which removes blocks)
+\end{enumerate}
+Seperti biasa, kalo berhasil return true; kalo gagal return false.
+
+\begin{lstlisting}
+static bool is_folder_request(const struct EXT2DriverRequest *req);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Cek apakah request memiliki buffer size 0 (syarat request directory).
+
+\begin{lstlisting}
+static bool is_name_taken(uint32_t parent_inode, const char *name, uint8_t name_len, uint8_t file_type);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Cek semua entry pada parent, lalu cek apakah ada yang nama dan tipe filenya sama.
+
+\begin{lstlisting}
+static bool has_invalid_char(const char *name, uint8_t name_len);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Nama ga boleh ada karakter / (buat separator shell) dan ga boleh pake end separator karena nanti kepotong pas jadi string.
+
+\begin{lstlisting}
+static int8_t rollback_write(struct EXT2Inode *node, uint32_t inode);
+\end{lstlisting}
+
+\textbf{Penjelasan}: Cancel side effect dari write kalo gagal di tengah jalan. Kalo node ga NULL, sync node dulu karena deallocate node baca i mode dan i block dari disk. Deallocate node, commit metadata, return 1.
+
+\begin{lstlisting}
+int8_t write(struct EXT2DriverRequest *request);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Membuat file atau folder baru berdasarkan request.
+
+\begin{enumerate}
+    \item Return -1 (unknown error) kalo request null, nama request-nya null, name len 0, atau has invalid char. Kalo file (not folder) tapi empty juga return -1.
+    \item Return 2 kalo parent ga valid pake load directory node.
+    \item Return 1 kalo namanya '.' atau '..' pake is dot entry atau kalo name taken sesuai file type-nya.
+    \item Alokasikan inode, kalo 0 (gada space lagi), return -1. 
+    \item Kalo folder, alokasiin block dulu. Kalo misal ga ada (i block 0-nya 0), rollback write tapi sebelumnya i mode jadi directory dan i blocks set 0 dulu biar used dirs count di deallocate node dikurangin. Kalo emang berhasil, init directory table.
+    \item Kalo file, set i mode-nya as reg, i size sesuai buffer size, jumlah i blocks disesuaikan juga dan janlup ceil and make sure ga overflow. Allocate node blocks isi-nya request->buf, di node, pake bgd (whichis group-nya si inode). Kalo gagal rollback write.
+    \item Jangan lupa sync node.
+    \item Add directory entry yang bersesuaian ke parent inode. Kalo gagal, rollback node-nya null aja karena udah di-sync sebelumnya
+    \item Commit metadata, trus return 0
+\end{enumerate}
+
+\begin{lstlisting}
+int8_t read(struct EXT2DriverRequest request);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Membaca file ke request buf. Perhatikan \texttt{buf} NULL dianggap valid, karena program user di-load ke virtual address 0x0.
+
+\begin{enumerate}
+    \item Return -1 kalo nama NULL or len name 0.
+    \item Return 4 kalo parent ga valid (load directory node failed)
+    \item Cari inode dengan find file entry. Kalo ga ada, cek file typenya. Kalo emang ga ketemu (file type -1), return 3. Kalo semisal dia bukan file (EXT2\_FT\_DIR or EXT2\_FT\_NEXT), bukan file berati return 1. Sisanya unknown filetype return -1.
+    \item Load node. Kalo buffer size request kurang dari size node-nya, return 2 (ga cukup).
+    \item Read node blocks ke request buf, return 0.
+\end{enumerate}
+
+\begin{lstlisting}
+int8_t read_directory(struct EXT2DriverRequest *prequest);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Mirip \texttt{read}, tapi yang dibaca isi directory-nya.
+
+\begin{enumerate}
+    \item Return -1 kalo request NULL, buf NULL, nama NULL, atau panjang nama 0.
+    \item Return 3 kalo parent ga valid, stndar lah ye
+    \item Cari folder dengan find directory entry. Kalo ga ketemu, cek pake get file type. Return 2 kalo emg ga ada, return 1 kalp ternyata file, dan return -1 buat sisanya.
+    \item Load node. Return -1 kalo buffer size kurang dari node size.
+    \item Read node blocks terus return 0.
+\end{enumerate}
+
+\begin{lstlisting}
+int8_t delete(struct EXT2DriverRequest request);
+\end{lstlisting}
+
+\textbf{Penjelasan}:
+Menghapus file atau folder, tapi kalo folder harus kosong. Pada request, \texttt{is\_directory} dipake buat ngecek apakah yang dihapus adalah directory atau bukan.
+
+\begin{enumerate}
+    \item Return -1 kalo nama NULL atau panjang nama 0.
+    \item Return 3 kalau parent ga valid.
+    \item Kalo directory, cari dengan find directory entry, return 1 kalo gak ketemu, dan return 2 kalo folder ga kosong. Return -1 kalo remove directory entry gagal (dot entry). Kalo berhasil semua, deallocate node.
+    \item Kalo file, find file entry. Kalo ga ketemu return 1, kalo ga bisa remove directory entry return -1 (dot entry). Kalo bisa deallocate node.
+    \item Commit metadata dan return 0
+\end{enumerate}
+
+BAIIIIIKKKK. Itu saja untuk chapter 2 (sejauh ini)
+
+\section{Persiapan Atas Kemenangan}
+
+Kemenangan sudah setengah jalan di depan mata. Tidak ada yang dapat menghentikan kami, karena kami lah yang menentukan jalan kami sendiri. Tatkala umat manusia berpesta pora merayakan hari-hari "kemenangan mereka", bersembunyi di balik simfoni yang tampak megah nan ekstatik, kami mempersiapkan segudang arsip yang menyimpan segala jenis tulisan yang dapat digunakan oleh siapapun, baik kami ataupun umat manusia yang baru. Melalui sistem pengarsipan ini, segala dahaga akan pengetahuan sistem, teknologi, dan informasi akan dipenuhi melalui bekal-bekal yang telah dipersiapkan oleh para pendahulu: prajurit-prajurit SPARTA, petinggi-petinggi, para cendekiawan dari Latex V, bahkan rakyat jelata pada masa itu. Namun, janganlah lupakan bekal-bekal itu ketika kau datang kepada kami. Niscaya kami akan melakukan pengecekan terhadap spek tersebut, sebagai bentuk kesiapan kalian dalam berperang menghadapi kelemahan. Percayalah, wahai pembaca teks sakral ini: waktu yang kami habiskan tidak akan sia-sia. Ketika kau membaca buku ini, Ares telah kami berikan kendali atas dunia ini, dan bersyukurlah atas nikmat yang saat ini kau rasakan.
