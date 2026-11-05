@@ -150,6 +150,16 @@ void syscall(struct InterruptFrame frame) {
             break;
         case 10: // Reserved for Chapter 4 process exit syscall
             break;
+        case 11: // Reserved for exec
+            break;
+        case 12: // Reserved for KILL
+            break;
+        case 13: // Reserved for get time
+            break;
+        case 14: // Reserved for put char at (for time) without gesering text cursor
+            break;
+        case 15: // Reserved for heap and other stuff ntar
+            break;
     }
 }
 

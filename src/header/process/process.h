@@ -10,7 +10,7 @@
 #include "header/filesystem/ext2.h"
 
 #define PROCESS_NAME_LENGTH_MAX          32
-#define PROCESS_PAGE_FRAME_COUNT_MAX     8
+#define PROCESS_PAGE_FRAME_COUNT_MAX     8 // note bisa ditingkatin kalo mau
 #define PROCESS_COUNT_MAX                16
 
 #define KERNEL_RESERVED_PAGE_FRAME_COUNT 4
