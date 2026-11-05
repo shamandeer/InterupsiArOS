@@ -4,6 +4,7 @@
 #include "header/memory/paging.h"
 #include "header/stdlib/string.h"
 #include "header/memory/swap.h"
+#include "header/process/process.h"
 
 /**
  * _paging_kernel_page_directory and _paging_kernel_page_table is initialized on kernel-entrypoint.s
@@ -11,6 +12,20 @@
 __attribute__((aligned(0x1000))) struct PageDirectory _paging_kernel_page_directory;
 
 __attribute__((aligned(0x1000))) struct PageTable _paging_kernel_page_table;
+
+/**
+ * Initialize page directory list for processes
+ */
+__attribute__((aligned(0x1000))) static struct PageDirectory page_directory_list[PAGING_DIRECTORY_TABLE_MAX_COUNT] = {0};
+
+/**
+ * Page directory tracker
+ */
+static struct {
+    bool page_directory_used[PAGING_DIRECTORY_TABLE_MAX_COUNT];
+} page_directory_manager = {
+    .page_directory_used = {false},
+};
 
 /**
  * Global page frame manager state tracking free/busy frames.
@@ -171,5 +186,39 @@ bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_a
      * - Remove the entry by setting it into 0
      */
     return true;
+}
+
+struct PageDirectory* paging_create_new_page_directory(void) {
+    
+    /*
+     * TODO: Get & initialize empty page directory from page_directory_list
+     * - Iterate page_directory_list[] & get unused page directory
+     * - Mark selected page directory as used
+     * - Create new page directory entry for kernel higher half with flag:
+     *     > present bit    true
+     *     > write bit      true
+     *     > pagesize 4 mb  true
+     *     > lower address  0
+     * - Set page_directory.table[0x300] with kernel page directory entry
+     * - Return the page directory address
+     */ 
+}
+
+void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr) {
+    uint32_t physical_addr_page_dir = (uint32_t) page_dir_virtual_addr;
+    // Additional layer of check & mistake safety net
+    if ((uint32_t) page_dir_virtual_addr > KERNEL_VIRTUAL_ADDRESS_BASE)
+        physical_addr_page_dir -= KERNEL_VIRTUAL_ADDRESS_BASE;
+    __asm__  volatile("mov %0, %%cr3" : /* <Empty> */ : "r"(physical_addr_page_dir): "memory");
+}
+
+bool paging_free_page_directory(struct PageDirectory *page_dir) {
+    /**
+     * TODO: Iterate & clear page directory values
+     * - Iterate page_directory_list[] & check &page_directory_list[] == page_dir
+     * - If matches, mark the page directory as unusued and clear all page directory entry
+     * - Return true
+     */
+    return false;
 }
 
