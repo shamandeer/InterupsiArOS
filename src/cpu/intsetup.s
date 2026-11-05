@@ -23,20 +23,36 @@ call_generic_handler:
     ; CPURegister.general & CPURegister.index
     pushad
 
-    ; Set segment registers to kernel_code before handling interrupt
+    ; Need to manipulate several register first, will borrow eax as "temp variable"
+    pushf
     push eax
+
+    mov eax, [esp+52]            ; Get ds register / segment selector for data
+    and eax, 0x3                 ; Check intra / inter using and operator (which set ZF flag)
+    jz  segment_register_setup   ; We will skip the esp manipulation if it's intraprivilege
+
+interprivilege_interrupt:
+    ; Interprivilege interrupt branch, get the esp from x86 interrupt stack
+    mov eax, [esp+76] 
+    mov [esp+20], eax
+
+segment_register_setup:
+    ; Set segment registers to kernel_code before handling interrupt
     mov ax, 0x10
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
     pop eax
+    popf
 
+    ; Use the current esp as base stack frame, this is only for main_interrupt_handler()
+    mov  ebp, esp 
     ; Call the C function
     call main_interrupt_handler
 
     ; Restore general-purpose & index register
-    popad
+    popad   ; Note: This instruction is not fully symmetric with pushad. $esp value is skipped
 
     ; Restore segment registers
     pop gs
@@ -44,7 +60,7 @@ call_generic_handler:
     pop es
     pop ds
 
-    ; Restore the esp (interrupt number & error code)
+    ; Restore esp (interrupt number & error code)
     add esp, 8
 
     ; Return to the code that got interrupted
@@ -52,7 +68,7 @@ call_generic_handler:
     ; [esp], [esp+4], [esp+8]
     ;   eip,   cs,    eflags
     ; Improper value will cause invalid return address & register
-    sti
+
     iret
 
 
@@ -131,18 +147,18 @@ no_error_code_interrupt_handler 31 ; 0x1F - Reserved
 ; 45 - 0x2D - IRQ13: Coprocessor
 ; 46 - 0x2E - IRQ14: Primary ATA Hard Disk
 ; 47 - 0x2F - IRQ15: Secondary ATA Hard Disk
-%assign i 32
+%assign i 32 
 %rep    32
 no_error_code_interrupt_handler i
-%assign i i+1
+%assign i i+1 
 %endrep
 
 
 
 ; ISR stub table, useful for reducing code repetition
 isr_stub_table:
-    %assign i 0
-    %rep    64
+    %assign i 0 
+    %rep    64 
     dd interrupt_handler_%+i
-    %assign i i+1
+    %assign i i+1 
     %endrep
