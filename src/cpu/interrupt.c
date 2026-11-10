@@ -6,6 +6,7 @@
 #include "header/text/framebuffer.h"
 #include "header/filesystem/ext2.h"
 #include "header/stdlib/string.h"
+#include "header/process/scheduler.h"
 
 struct TSSEntry _interrupt_tss_entry = {
     .ss0 = GDT_KERNEL_DATA_SEGMENT_SELECTOR,
@@ -177,6 +178,9 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             page_fault_handler(cr2, frame.int_stack.error_code);
             break;
         }
+        case PIC1_OFFSET + IRQ_TIMER:
+            pic_ack(IRQ_TIMER);
+            break;
     }
 }
 
