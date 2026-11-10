@@ -113,5 +113,6 @@ void pic_remap(void);
 void main_interrupt_handler(struct InterruptFrame frame);
 void kernel_puts(const char *buf, uint32_t count, uint8_t color);
 void syscall(struct InterruptFrame frame);
+void activate_timer_interrupt(void);
 
 #endif

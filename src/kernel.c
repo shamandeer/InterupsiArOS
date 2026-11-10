@@ -10,6 +10,7 @@
 #include "header/memory/paging.h"
 #include "header/memory/swap.h"
 #include "header/stdlib/string.h"
+#include "header/process/scheduler.h"
 
 #define USER_PROGRAM_BASE  ((uint8_t *) 0)
 #define USER_PROGRAM_PAGES 80u
@@ -37,6 +38,7 @@ void kernel_setup(void) {
 
     gdt_install_tss();
     set_tss_register();
+    scheduler_init();
 
     for (uint32_t i = 0; i < USER_PROGRAM_PAGES; i++) {
         void *vaddr = USER_PROGRAM_BASE + i * PAGE_FRAME_SIZE;
