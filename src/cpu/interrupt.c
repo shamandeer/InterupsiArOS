@@ -179,7 +179,14 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             break;
         }
         case PIC1_OFFSET + IRQ_TIMER:
+            struct Context context = {
+                .cpu = frame.cpu,
+                .eip = frame.int_stack.eip,
+                .eflags = frame.int_stack.eflags,
+            };
+            scheduler_save_context_to_current_running_pcb(context);
             pic_ack(IRQ_TIMER);
+            scheduler_switch_to_next_process();
             break;
     }
 }

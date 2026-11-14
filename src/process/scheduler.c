@@ -23,7 +23,12 @@ int32_t next_queue(void) {
     return -1;
 }
 
-void scheduler_save_context_to_current_running_pcb(struct Context ctx);
+void scheduler_save_context_to_current_running_pcb(struct Context ctx) {
+    if (current_process_schedule_index == -1) return;
+    if (!_process_list[current_process_schedule_index].metadata.active || _process_list[current_process_schedule_index].metadata.state != RUNNING) return;
+
+    _process_list[current_process_schedule_index].context = ctx;
+}
 
 void scheduler_switch_to_next_process(void) {
     int32_t next = next_queue();
