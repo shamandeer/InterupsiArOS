@@ -183,6 +183,7 @@ void main_interrupt_handler(struct InterruptFrame frame) {
                 .cpu = frame.cpu,
                 .eip = frame.int_stack.eip,
                 .eflags = frame.int_stack.eflags,
+                .page_directory_virtual_addr = paging_get_current_page_directory_addr()
             };
             scheduler_save_context_to_current_running_pcb(context);
             pic_ack(IRQ_TIMER);
