@@ -38,8 +38,6 @@ void kernel_setup(void) {
 
     gdt_install_tss();
     set_tss_register();
-    scheduler_init();
-    scheduler_switch_to_next_process();
 
     for (uint32_t i = 0; i < USER_PROGRAM_PAGES; i++) {
         void *vaddr = USER_PROGRAM_BASE + i * PAGE_FRAME_SIZE;
@@ -67,6 +65,8 @@ void kernel_setup(void) {
         kernel_halt_with_error("Error: failed to read 'shell' from root directory");
 
     set_tss_kernel_current_stack();
+    scheduler_init();
+    scheduler_switch_to_next_process();
     kernel_execute_user_program((void *) 0x0);
     while (true);
 }
