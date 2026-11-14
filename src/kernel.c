@@ -39,6 +39,7 @@ void kernel_setup(void) {
     gdt_install_tss();
     set_tss_register();
     scheduler_init();
+    scheduler_switch_to_next_process();
 
     for (uint32_t i = 0; i < USER_PROGRAM_PAGES; i++) {
         void *vaddr = USER_PROGRAM_BASE + i * PAGE_FRAME_SIZE;
