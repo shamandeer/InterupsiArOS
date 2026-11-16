@@ -189,19 +189,33 @@ bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_a
 }
 
 struct PageDirectory* paging_create_new_page_directory(void) {
-    
-    /*
-     * TODO: Get & initialize empty page directory from page_directory_list
-     * - Iterate page_directory_list[] & get unused page directory
-     * - Mark selected page directory as used
-     * - Create new page directory entry for kernel higher half with flag:
-     *     > present bit    true
-     *     > write bit      true
-     *     > pagesize 4 mb  true
-     *     > lower address  0
-     * - Set page_directory.table[0x300] with kernel page directory entry
-     * - Return the page directory address
-     */ 
+    for (uint32_t i = 0; i < PAGING_DIRECTORY_TABLE_MAX_COUNT; i++) {
+        if (page_directory_manager.page_directory_used[i]) {
+            continue;
+        }
+        page_directory_manager.page_directory_used[i] = true;
+        struct PageDirectory *page_dir = &page_directory_list[i];
+        memset((void *) page_dir, 0, sizeof(struct PageDirectory));
+
+        // Bagian kernel (higher half, index 0x300 ke atas) di-share dari page directory kernel,
+        // jadi kode, data, dan stack kernel tetap ter-map setelah CR3 diganti
+        volatile uint32_t *dst = (volatile uint32_t *) page_dir->table;
+        volatile uint32_t *src = (volatile uint32_t *) _paging_kernel_page_directory.table;
+        for (uint32_t idx = KERNEL_VIRTUAL_BASE >> 22; idx < RECURSIVE_PAGE_DIRECTORY_INDEX; idx++) {
+            dst[idx] = src[idx];
+        }
+
+        // Recursive mapping: PD[1023] menunjuk ke page directory ini sendiri (alamat fisik),
+        // dibutuhkan paging_get_page_table() saat page directory ini aktif
+        uint32_t physical_addr = (uint32_t) page_dir - KERNEL_VIRTUAL_BASE;
+        page_dir->table[RECURSIVE_PAGE_DIRECTORY_INDEX].flag = (struct PageDirectoryEntryFlag) {
+            .present_bit = true,
+            .write_bit   = true,
+        };
+        page_dir->table[RECURSIVE_PAGE_DIRECTORY_INDEX].page_table_base_address = physical_addr >> 12;
+        return page_dir;
+    }
+    return NULL;
 }
 
 void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr) {
@@ -213,12 +227,33 @@ void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr) {
 }
 
 bool paging_free_page_directory(struct PageDirectory *page_dir) {
-    /**
-     * TODO: Iterate & clear page directory values
-     * - Iterate page_directory_list[] & check &page_directory_list[] == page_dir
-     * - If matches, mark the page directory as unusued and clear all page directory entry
-     * - Return true
-     */
+    // Tidak boleh membebaskan page directory yang sedang aktif
+    if (page_dir == paging_get_current_page_directory_addr()) {
+        return false;
+    }
+    for (uint32_t i = 0; i < PAGING_DIRECTORY_TABLE_MAX_COUNT; i++) {
+        if (&page_directory_list[i] != page_dir) {
+            continue;
+        }
+        if (!page_directory_manager.page_directory_used[i]) {
+            return false;
+        }
+        // Bebaskan frame page table milik bagian user (index < 0x300).
+        // Bagian kernel di-share, jadi jangan dibebaskan.
+        for (uint32_t idx = 0; idx < (KERNEL_VIRTUAL_BASE >> 22); idx++) {
+            volatile struct PageDirectoryEntry *entry = &page_dir->table[idx];
+            if (entry->flag.present_bit) {
+                uint32_t frame = entry->page_table_base_address;
+                page_manager_state.page_frame_map[frame]   = false;
+                page_manager_state.frame_swappable[frame]  = false;
+                page_manager_state.frame_vaddr[frame]      = 0;
+                page_manager_state.free_page_frame_count++;
+            }
+        }
+        memset((void *) page_dir, 0, sizeof(struct PageDirectory));
+        page_directory_manager.page_directory_used[i] = false;
+        return true;
+    }
     return false;
 }
 
