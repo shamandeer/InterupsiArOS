@@ -17,7 +17,6 @@ process_context_switch: ; context switching low-level code typeshi
     mov edi, [ecx] ; edi
     mov esi, [ecx+4] ; esi
     mov ebp, [ecx+8] ; ebp
-    mov esp, [ecx+12] ; esp
     mov ebx, [ecx+16] ; ebx
     mov edx, [ecx+20] ; edx
     

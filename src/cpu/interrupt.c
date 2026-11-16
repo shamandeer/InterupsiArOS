@@ -185,6 +185,7 @@ void main_interrupt_handler(struct InterruptFrame frame) {
                 .eflags = frame.int_stack.eflags,
                 .page_directory_virtual_addr = paging_get_current_page_directory_addr()
             };
+            context.cpu.stack.esp = frame.int_stack.esp;
             scheduler_save_context_to_current_running_pcb(context);
             pic_ack(IRQ_TIMER);
             scheduler_switch_to_next_process();
