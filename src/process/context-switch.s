@@ -9,9 +9,9 @@ process_context_switch: ; context switching low-level code typeshi
     ; setup stack iret
     push dword 0x20 | 0x3 ; ss
     push dword [ecx+12] ; user esp
-    push dword [ecx+64] ; eflags
+    push dword [ecx+52] ; eflags
     push dword 0x18 | 0x3 ; cs
-    push dword [ecx+56] ; eip
+    push dword [ecx+48] ; eip
 
     ; load all registers to ctx
     mov edi, [ecx] ; edi

@@ -77,6 +77,11 @@ static volatile struct PageTableEntry *vaddr_pte(struct PageDirectory *page_dir,
 
 // Second chance: referenced page gets access_bit cleared and survives this round
 static bool spare_if_accessed(void *ctx, uint32_t frame) {
+    // Hanya frame milik page directory yang sedang aktif yang boleh di-evict.
+    // Semua process memakai virtual address yang sama (0x0, dst), jadi frame process lain
+    // tidak bisa dicari PTE-nya lewat recursive mapping page directory aktif.
+    if (page_manager_state.frame_owner[frame] != (struct PageDirectory *) ctx)
+        return true;
     volatile struct PageTableEntry *pte = vaddr_pte(ctx, page_manager_state.frame_vaddr[frame]);
     if (pte == NULL || !pte->flag.present_bit)
         return true; // inconsistent metadata, never evict
@@ -104,6 +109,7 @@ bool swap_out_one(struct PageDirectory *page_dir) {
     page_manager_state.page_frame_map[frame]  = false;
     page_manager_state.frame_vaddr[frame]     = 0;
     page_manager_state.frame_swappable[frame] = false;
+    page_manager_state.frame_owner[frame]     = NULL;
     page_manager_state.free_page_frame_count++;
 
     swap_out_count++;
@@ -122,6 +128,7 @@ bool swap_in(struct PageDirectory *page_dir, void *vaddr) {
         return false;
     page_manager_state.frame_swappable[frame] = true;
     page_manager_state.frame_vaddr[frame]     = page;
+    page_manager_state.frame_owner[frame]     = page_dir;
 
     void *page_addr = (void *) (uintptr_t) page;
     struct PageTableEntryFlag flag = {

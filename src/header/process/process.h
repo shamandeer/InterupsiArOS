@@ -10,10 +10,9 @@
 #include "header/filesystem/ext2.h"
 
 #define PROCESS_NAME_LENGTH_MAX          32
-#define PROCESS_PAGE_FRAME_COUNT_MAX     8 // note bisa ditingkatin kalo mau
+#define PROCESS_PAGE_FRAME_COUNT_MAX     96 // 80 halaman program + 8 halaman stack + cadangan
 #define PROCESS_COUNT_MAX                16
 
-#define KERNEL_RESERVED_PAGE_FRAME_COUNT 4
 #define KERNEL_VIRTUAL_ADDRESS_BASE      0xC0000000
 
 #define CPU_EFLAGS_BASE_FLAG               0x2
@@ -38,6 +37,12 @@
 #define CPU_EFLAGS_FLAG_AES_SCHEDULE_LOAD  0x40000000
 #define CPU_EFLAGS_FLAG_ALTER_INSTRUCTION  0x80000000
 
+// Layout virtual memory setiap user process (sama dengan layout shell di Chapter 3)
+#define PROCESS_USER_PROGRAM_PAGES  80u                                     // 0x0 .. 0x50000 (text, data, bss)
+#define PROCESS_USER_PROGRAM_SIZE   (PROCESS_USER_PROGRAM_PAGES * PAGE_FRAME_SIZE)
+#define PROCESS_USER_STACK_TOP      0x400000u                               // stack tumbuh ke bawah dari sini
+#define PROCESS_USER_STACK_PAGES    8u
+
 // Return code constant for process_create_user_process()
 #define PROCESS_CREATE_SUCCESS                   0
 #define PROCESS_CREATE_FAIL_MAX_PROCESS_EXCEEDED 1
@@ -45,6 +50,29 @@
 #define PROCESS_CREATE_FAIL_NOT_ENOUGH_MEMORY    3
 #define PROCESS_CREATE_FAIL_FS_READ_FAILURE      4
 
+
+typedef enum PROCESS_STATE {
+// TODO (DONE): Add process states
+    READY,
+    WAITING,
+    RUNNING,
+} PROCESS_STATE;
+
+/**
+* Contain information needed for task to be able to get interrupted and resumed later
+*
+* @param cpu All CPU register state
+* @param eip CPU instruction counter to resume execution
+* @param eflags Flag register to load before resuming the execution
+* @param page_directory_virtual_addr CPU register CR3, containing pointer to active page directory
+*/
+struct Context {
+    // TODO (DONE): Add important field here
+    struct CPURegister cpu;
+    uint32_t eip;
+    uint32_t eflags;
+    struct PageDirectory *page_directory_virtual_addr;
+};
 
 /**
 * Structure data containing information about a process
@@ -70,28 +98,11 @@ struct ProcessControlBlock {
     } memory;
 };
 
-/**
-* Contain information needed for task to be able to get interrupted and resumed later
-*
-* @param cpu All CPU register state
-* @param eip CPU instruction counter to resume execution
-* @param eflags Flag register to load before resuming the execution
-* @param page_directory_virtual_addr CPU register CR3, containing pointer to active page directory
-*/
-struct Context {
-    // TODO (DONE): Add important field here
-    struct CPURegister cpu;
-    uint32_t eip;
-    uint32_t eflags;
-    struct PageDirectory *page_directory_virtual_addr;
-};
-
-typedef enum PROCESS_STATE {
-// TODO (DONE): Add process states
-    READY,
-    WAITING,
-    RUNNING,
-} PROCESS_STATE;
+// Offset ini dipakai langsung oleh context-switch.s. Kalau struct berubah, compile langsung gagal.
+_Static_assert(sizeof(struct CPURegister) == 48, "CPURegister harus 48 byte");
+_Static_assert(offsetof(struct Context, eip) == 48, "offset eip berubah, update context-switch.s");
+_Static_assert(offsetof(struct Context, eflags) == 52, "offset eflags berubah, update context-switch.s");
+_Static_assert(offsetof(struct Context, page_directory_virtual_addr) == 56, "offset page dir berubah");
 
 extern struct ProcessControlBlock _process_list[PROCESS_COUNT_MAX];
 

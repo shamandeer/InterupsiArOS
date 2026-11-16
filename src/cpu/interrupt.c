@@ -178,7 +178,8 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             page_fault_handler(cr2, frame.int_stack.error_code);
             break;
         }
-        case PIC1_OFFSET + IRQ_TIMER:
+        case PIC1_OFFSET + IRQ_TIMER: {
+            // intsetup.s sudah menaruh esp user di cpu.stack.esp untuk interrupt dari ring 3
             struct Context context = {
                 .cpu = frame.cpu,
                 .eip = frame.int_stack.eip,
@@ -190,6 +191,7 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             pic_ack(IRQ_TIMER);
             scheduler_switch_to_next_process();
             break;
+        }
     }
 }
 
