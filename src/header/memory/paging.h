@@ -142,12 +142,14 @@ struct PageTable {
  * @param free_page_frame_count Number of false entries in page_frame_map
  * @param frame_vaddr           Page-aligned virtual address owning the frame, valid when frame_swappable is true
  * @param frame_swappable       True when the frame may be evicted to swap. Kernel and page table frames are always false
+ * @param frame_owner           Page directory that owns the frame (NULL = kernel/free)
  */
 struct PageManagerState {
     bool     page_frame_map[PAGE_FRAME_MAX_COUNT];
     uint32_t free_page_frame_count;
     uint32_t frame_vaddr[PAGE_FRAME_MAX_COUNT];
     bool     frame_swappable[PAGE_FRAME_MAX_COUNT];
+    struct PageDirectory *frame_owner[PAGE_FRAME_MAX_COUNT]; // page directory pemilik frame (NULL = kernel/kosong)
 } __attribute__((packed));
 
 extern struct PageManagerState page_manager_state;

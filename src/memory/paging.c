@@ -135,6 +135,7 @@ bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtu
     if (frame == PAGING_INVALID_FRAME) return false;
     page_manager_state.frame_swappable[frame] = true;
     page_manager_state.frame_vaddr[frame]     = (uint32_t) virtual_addr & ~(PAGE_FRAME_SIZE - 1);
+    page_manager_state.frame_owner[frame]     = page_dir;
     struct PageTableEntryFlag flag = {
         .present_bit = true,
         .write_bit = true,
@@ -177,6 +178,7 @@ bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_a
         page_manager_state.page_frame_map[frame_number] = false;
         page_manager_state.frame_vaddr[frame_number] = 0;
         page_manager_state.frame_swappable[frame_number] = false;
+        page_manager_state.frame_owner[frame_number] = NULL;
         page_manager_state.free_page_frame_count++;
         flush_single_tlb(virtual_addr);
     }
@@ -247,6 +249,7 @@ bool paging_free_page_directory(struct PageDirectory *page_dir) {
                 page_manager_state.page_frame_map[frame]   = false;
                 page_manager_state.frame_swappable[frame]  = false;
                 page_manager_state.frame_vaddr[frame]      = 0;
+                page_manager_state.frame_owner[frame]      = NULL;
                 page_manager_state.free_page_frame_count++;
             }
         }
