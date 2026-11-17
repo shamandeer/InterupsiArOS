@@ -22,6 +22,26 @@ const char keyboard_scancode_1_to_ascii_map[256] = {
       0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
 };
 
+const char alt_keyboard_scancode_1_to_ascii_map[256] = {
+      0, 0x1B, '!', '@', '#', '$', '%', '^',  '&', '*', '(',  ')',  '_', '+', '\b', '\t',
+    'Q',  'W', 'E', 'R', 'T', 'Y', 'U', 'I',  'O', 'P', '{',  '}', '\n',   0,  'A',  'S',
+    'D',  'F', 'G', 'H', 'J', 'K', 'L', ':', '\"', '~',   0, '|',  'Z', 'X',  'C',  'V',
+    'B',  'N', 'M', '<', '>', '?',   0, '*',    0, ' ',   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0, '-',    0,    0,   0,  '+',    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+      0,    0,   0,   0,   0,   0,   0,   0,    0,   0,   0,    0,    0,   0,    0,    0,
+};
+
 static struct KeyboardDriverState keyboard_state;
 
 void keyboard_state_activate(void) {
@@ -42,8 +62,16 @@ void get_keyboard_buffer(char *buf) {
 void keyboard_isr(void) {
     uint8_t scancode = in(KEYBOARD_DATA_PORT);
 
-    if (keyboard_state.keyboard_input_on && scancode < 0x80) {
-        char mapped_char = keyboard_scancode_1_to_ascii_map[scancode];
+    if (scancode == 0x2a) {
+        keyboard_state.shift_mode = true;
+    }
+    
+    if (scancode == (0x2a + 0x80)) {
+        keyboard_state.shift_mode = false;
+    }
+
+    if (keyboard_state.keyboard_input_on && scancode < 0x80 && scancode != 0x2a) {
+        char mapped_char = keyboard_state.shift_mode ? alt_keyboard_scancode_1_to_ascii_map[scancode] : keyboard_scancode_1_to_ascii_map[scancode];
         if (mapped_char != 0)
             keyboard_state.keyboard_buffer = mapped_char;
     }
