@@ -1,0 +1,658 @@
+\chapter{Paging, User Mode, and Shell}
+
+\section{Virtual Address dan Physical Address}
+
+Sedikit refresher, physical address adalah address secara fisik dalam main memory (RAM), sedangkan virtual address adalah address yang di-generate oleh program. Tentu address dari virtual address tetap ada di physical memory, walaupun program melihatnya ia start di offset ke-0 (kenyataannya tidak begitu).
+
+\section{Paging}
+
+Paging adalah metode mapping virtual address ke physical address dengan cara membagi blok-blok memori ke dalam halaman-halaman atau pages. Daerah physical memory yang dipetakan diberi nama Page Frame. Informasi terkait pemetaan akan dibawa oleh Page Table dan Page Directory.
+
+\section{MMU, TLB, dan CR3}
+
+MMU (Memory Management Unit) berfungsi melakukan pemetaan antara virtual dan physical memory. TLB (Translation Lookaside Buffer) adalah sebuah komponen caching terkait informasi pemetaan tersebut (biar cepet), harus diflush dulu kalo ada perubahan ke page table. CR3 adalah register CPU yang menyimpan physical address dari page directory suatu process.
+
+\section{Metode Paging}
+
+Kita menggunakan hierarchical Page Table dengan 2-level Page Table yang memetakan Page Directory -> Page Table -> Page Frame. Translasi virtual address ke physical address dilakukan dengan melihat virtual address itu sendiri. Bit 31-22 menunjuk indeks pada Page Directory yaitu Page Table keberapa, bit 21-12 menunjuk indeks pada Page Table yaitu Frame keberapa, bit 11-0 menunjuk indeks pada Page Frame.
+
+\section{Paging Implementation}
+
+\subsection{Constants}
+
+\begin{table}[htbp]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{|l|l|l|}
+\hline
+Konstanta                                 & Nilai       & Penjelasan                                           \\ \hline
+SYSTEM\_MEMORY\_MB                        & 128         & Ukuran memori dalam MiB actually                     \\ \hline
+PAGE\_ENTRY\_COUNT                        & 1024        & Jumlah entry dalam Page Directory                    \\ \hline
+PAGE\_FRAME\_SIZE                         & 0x1000      & Ukuran page frame = 4 KiB                            \\ \hline
+KERNEL\_RESERVED\_PAGE\_FRAME\_COUNT      & 1024        & Jumlah frame untuk kernel                           \\ \hline
+RECURSIVE\_PAGE\_TABLES\_VIRTUAL\_ADDRESS & 0xFFC00000u & Virtual address untuk akses page table itu sendiri   \\ \hline
+RECURSIVE\_PAGE\_DIRECTORY\_INDEX         & 1023u       & Indeks PD menunjuk ke diri sendiri (fractal mapping) \\ \hline
+KERNEL\_VIRTUAL\_BASE                     & 0xC0000000  & Virtual Address tempat kernel space                  \\ \hline
+PAGING\_INVALID\_FRAME                    & 0xFFFFFFFFu & Yaa invalid frame                                    \\ \hline
+PAGE\_FRAME\_MAX\_COUNT                   & 32768       & 128 MiB (memory size) / 4 KiB (frame size)           \\ \hline
+\end{tabular}
+}
+\end{table}
+
+\subsection{Catatan Penting}
+
+By default, QEMU menyediakan 128 MiB memory limit. Tapi dengan desain 32-bit virtual address, bisa 4 GiB. It's magic, let's leave it at that.
+
+Di physical, address \texttt{0x00000000} - \texttt{0x003FFFFF} mencakup 4 MiB kernel (kernel code, PD kernel, PT kernel); \texttt{0x00400000} - \texttt{0x07FFFFFF} merupakan frame bebas yang berisi user space.
+
+Di virtual address, \texttt{0x00000000} - \texttt{0x0BFFFFFF} merupakan user space, \texttt{0xC0000000} - \texttt{0xFFBFFFFF} merupakan kernel space, dan \texttt{0xFFC00000} - \texttt{0xFFFFFFFF} merupakan window recursive.
+
+Cara CPU menerjemahkan PD, PT, dan offset dari virtual address sudah dijelaskan sebelumnya. Kalo kita mau nerima data frame-nya, kita bisa akses PD->PT->Frame pada user space. Tapi, kalo kita mau ngambil page table-nya sendiri, kita perlu lewat window recursive. Desainnya memang gitu.
+
+Ini rumus mengambil page table-nya. Bakal disebut ambil page table pada window rekursif seterusnya.
+\begin{lstlisting}[language=c]
+    (struct PageTable *)(RECURSIVE_PAGE_TABLES_VIRTUAL_ADDRESS + page_directory_index * PAGE_FRAME_SIZE);
+\end{lstlisting}
+
+Also kita bakal menggunakan paging kernel page directory dan paging kernel page table sebagai page directory, page table yang di-setup di kernel-entrypoint, yay.
+
+\subsection{PageDirectory dan PageTable}
+
+PageDirectoryEntry mengandung flag dan base address ke PageTable. PageTableEntry mengandung flag dan base address ke physical frame. Sebenarnya flag-nya standar-standar aja, mungkin yang penting \texttt{present\_bit} yang menandakan dia exist nggak, dll. sisanya bisa dibaca aja. Kita pake size 4 KiB rember that, so jangan naikin jadi 4 MiB.
+
+PageDirectory dan PageTable mengandung each entry yang bersesuaian
+
+\subsection{PageManagerState}
+
+Memuat.... state manager page, of course. Dibuat global juga. Memuat array bool \texttt{page\_frame\_map} yang menyatakan apakah di indeks tertentu digunakan, jumlah free frame page \texttt{free\_page\_frame\_count}, array virtual address yang bersesuaian dengan frame \texttt{frame\_vaddr}, array bool apakah frame bisa di-swap \texttt{frame\_swappable} (bagian swap space dijelaskan lebih lanjut nanti). Also tambahan untuk M4, ada page owner. Kalo NULL kernel, kalo gak si page directory bersangkutan (biasanya)
+
+\begin{lstlisting}[language=c]
+    struct PageManagerState page_manager_state = {
+        .page_frame_map = {
+            [0 ... KERNEL_RESERVED_PAGE_FRAME_COUNT - 1] = true,
+            [KERNEL_RESERVED_PAGE_FRAME_COUNT ... PAGE_FRAME_MAX_COUNT - 1] = false
+        },
+        .free_page_frame_count = PAGE_FRAME_MAX_COUNT - KERNEL_RESERVED_PAGE_FRAME_COUNT,
+    };
+\end{lstlisting}
+
+\textbf{Penjelasan:} \texttt{PageManagerState} global. Pada frame map index 0 hingga Kernel Reserved Page Frame - 1. 1024 frame fisik pertama dialokasikan hanya untuk kernel, jadi tidak boleh diotak-atik. Frame-frame selanjutnya hingga frame ke 32768 (kalo diitung dari 1) bakal di-set as unused dan boleh dipake.
+
+\subsection{Fungsi-fungsi pada paging.c}
+
+Di bagian sini, fungsi utamanya adalah untuk alokasi user page frame dan juga free user page frame. Namun tentunya perlu tahu juga fungsi-fungsi yang dapat membantu proses tersebut. Note bagian swap space akan dijelaskan lebih lanjut
+
+\begin{lstlisting}[language=c]
+    bool paging_allocate_check(uint32_t amount);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Mengecek apakah amount bytes memori yang diperlukan bisa dialokasikan atau tidak. Dilakukan rounding up untuk mendapatkan jumlah frame yang dibutuhkan, lalu di-compare dengan free page frame count dan jumlah free slot pada swap space.
+
+\begin{lstlisting}[language=c]
+   struct PageDirectory *paging_get_current_page_directory_addr(void);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Mengembalikan address page directory yang ditunjuk oleh CR3. Karena kita pakai virtual address, tentu kita harus menambahnya dengan offset kernel virtual base.
+
+\begin{lstlisting}[language=c]
+    struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index, bool check_only);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Mengembalikan page table berdasarkan parameter yang diberikan, menggunakan fractal mapping, teknik recursive window yang telah disebutkan sebelumnya.
+\begin{enumerate}
+    \item Return NULL jika page directory index adalah indeks rekursif aka 1023 karena kalau gitu malah nunjuk ke page directory itu sendiri. Pastiin juga bahwa page directory yang dimaksud adalah page directory yang ada pada cr3, kalo gak sama, return NULL juga.
+    \item Ambil entry page directory pada page directory index
+    \item Jika page table present di memory, return page table melalui window rekursif
+    \item Jika check only benar, maka return NULL saja karena kita tidak ingin mengalokasikan page table baru
+    \item Jika memang belum ada, cari frame yang belum terpakai (find free frame). Jika invalid, memang udah penuh, return NULL
+    \item Kalo ketemu, set frame sebagai unswappable (karena page table ga boleh di-swap), susun dir entry sesuai frame page number dengan present, write, dan user bit bernilai true.
+    \item  Ambil page table melalui window recursive, flush, memset 0, lalu return page table.
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void update_page_table_entry(struct PageDirectory *page_dir, void *physical_addr, void *virtual_addr, struct PageTableEntryFlag flag);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Mengupdate page table entry (address frame-nya)
+\begin{enumerate}
+    \item Ambil page directory index dan page table index dari virtual address, lalu get page table. Kalo NULL, gajadi
+    \item Ubah flag page table entry dengan yang baru, lalu set physical address yang baru.
+    \item Flush tlb
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    static uint32_t take_free_frame(void);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Return nomor frame. Search frame yang belum ke-map, set as mapped, kurangin free page frame count.
+
+\begin{lstlisting}[language=c]
+    uint32_t paging_find_free_frame(void);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Untuk mencari frame yang bebas. Ambil nomor frame dengan take free frame. Kalo invalid frame, free one frame dengan swap out, lalu ambil free frame lagi. Return nilai frame tersebut.
+
+\begin{lstlisting}[language=c]
+    bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Alokasi satu frame di user space
+\begin{enumerate}
+    \item Return false (ga ngapa-ngapain) kalo ga ada yang available
+    \item Ambil page table dari PDI dari virtual address
+    \item Return false kalo: ga ketemu page table, PTE dari PTI-nya udah present, atau swap di disk
+    \item Ambil frame number, kalo invalid return false. Selebihnya di state manager, set swappable as true dan vaddr-nya atur-atur
+    \item Physical address diambil dari frame number * size
+    \item Update page table entry pake flag baru, physical address, virtual address. Return true.
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Free satu frame di user space
+\begin{enumerate}
+    \item Seperti biasa, get page table. Tapi kali ini check only true supaya ga nge-alokasiin page table baru. Kalo ga present yaudah berarti gaada yang bisa di-free dan return false
+    \item Ambil PTE dan cek apakah swapped. Kalo iya, release slot-nya dan set as 0 aja (karena ga ada frame-nya, dia di disk langsung)
+    \item Kalo PTE ga present return false
+    \item Ambil frame number dari PTE, set PTE as 0, vaddr 0, swappable false, free page count nambah, flush tlb virtual address. Return true.
+\end{enumerate}
+
+Itu saja untuk sekarang. Bagian yang ditambahkan pada M4 akan ditunjukkan pada chapter selanjutnya.
+
+\subsection{Page Fault}
+
+Kondisi di mana program mengakses page yang belum dipetakan (present bit-nya 0). Penyesuaiannya bagaimana? Ada kode interupsi-nya dan nanti ada handling-nya.
+
+\begin{lstlisting}[language=c]
+    case 0xE: {
+        uint32_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        page_fault_handler(cr2, frame.int_stack.error_code);
+         break;
+    }
+\end{lstlisting}
+
+Menggunakan page fault handler yang akan dijelaskan di bagian swap space
+
+\section{Swap Space}
+
+\subsection{Core Implementation}
+
+Sebelumnya, ada sedikit adjustment terkait fungsi dari field ignored pada PTE. Bagian itu akan dijadikan penanda apakah dia sedang di-swap atau tidak. Physical page base address juga menyimpan swap slot jika di-swap.
+
+Mari kita look over \texttt{swap.h}.
+
+\begin{table}[htbp]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{|l|l|l|}
+\hline
+Konstanta                                 & Nilai       & Penjelasan                                           \\ \hline
+SWAP\_START\_LBA                        & 8192         & Index mulai space pada storage.bin yang dialokasikan khusus untuk swap space                     \\ \hline
+SWAP\_SLOT\_COUNT                        & 1024        & Ada 4 MiB slot                    \\ \hline
+BLOCKS\_PER\_PAGE                         & 8      & Jumlah block yang bisa untuk satu page                            \\ \hline
+SWAP\_INVALID\_SLOT      & 0xFFFFFFFFu        & Yaa invalid, ini batas atas frame terakhir (i think)                             \\ \hline
+PTE\_SWAPPED\_BIT & 0x1u & Diperlakukan ke bit pertama field ignored (bit 9 PTE)   \\ \hline
+\end{tabular}
+}
+\end{table}
+
+Coba kita cek fungsi yang langsung didefinisikan di header file.
+
+\begin{lstlisting}[language=c]
+    static inline bool pte_is_swapped(volatile struct PageTableEntry *pte);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Untuk mengecek apakah sebuah page di-swap atau tidak. Caranya dengan mengecek apakah PTE tidak present dan pengecekan swapped bit dengan ignored field.
+
+\begin{lstlisting}[language=c]
+    static inline uint32_t pte_get_swap_slot(volatile struct PageTableEntry *pte);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Mengembalikan swap slot number yang disimpan pada PTE yang ada di disk.
+
+\begin{lstlisting}[language=c]
+    static inline void pte_set_swapped(volatile struct PageTableEntry *pte, uint32_t slot);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Mengatur ulang present bit, ignored field, dan physical page base address pada PTE sebelum di-swap.
+
+\begin{lstlisting}[language=c]
+    static inline void pte_clear_swapped(volatile struct PageTableEntry *pte);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Sesuai namanya, membalikkan status swapped pada ignored field, tapi ga nyentuh present ataupun swap slot
+
+Header udah dijelasin semua, mari kita pindah ke file c-nya langsung.
+
+Beberapa variabel menarik
+\begin{enumerate}
+    \item \texttt{swap\_slot\_bitmap}: menyatakan bitmap penanda apakah slot sudah di-use.
+    \item \texttt{swap\_free\_slots}: menyatakan jumlah slot free. in the beninging semuanya free.
+    \item \texttt{clock\_hand}: Variabel untuk posisi pengecekan slot pada algoritma second chance. Inisialisasi sebagai 1024.
+    \item \texttt{swap\_out\_count}: jumlah swap out
+    \item \texttt{swap\_in\_count}: jumlah swap in
+\end{enumerate}
+
+Gas lanjut aja
+
+\begin{lstlisting}[language=c]
+    static bool is_slot_used(uint32_t slot);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Cek apakah slot sudah digunakan, juga cek apakah slot di bawah count
+
+\begin{lstlisting}[language=c]
+    void swap_init(void)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Inisialisasi swap slot untuk di awal. Bersihkan dulu bitmap-nya, set jumlah free slots, set jumlah clock hand, set jumlah swap out dan swap in.
+
+\begin{lstlisting}[language=c]
+    uint32_t swap_slot_alloc(void)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Alokasi swap slot free dengan first-fit. Loop sepanjang jumlah slot dan cek apakah is slot used; jika tidak, maka atur-atur bitmap-nya, kurangi jumlah free slot, dan return slot-nya. Kalo ga ketemu, return invalid slot.
+
+\begin{lstlisting}[language=c]
+    void swap_slot_free(uint32_t slot)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Free slot pada posisi tertentu, kebalikan dari swap slot alloc.
+
+\begin{lstlisting}[language=c]
+    uint32_t swap_free_slot_count(void)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Return jumlah free slot.
+
+\begin{lstlisting}[language=c]
+    void swap_write_page(uint32_t slot, const void *vaddr)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Jika slot sudah dialokasikan, write block isi vaddr ke offset start dan slot sebanyak blocks per page.
+
+\begin{lstlisting}[language=c]
+    void swap_read_page(uint32_t slot, void *vaddr)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Kebalikan dari swap write page, tapi write block dari offset ke vaddr.
+
+\begin{lstlisting}[language=c]
+    static bool spare_if_accessed(void *ctx, uint32_t frame);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Menentukan apakah suatu frame di-spare atau tidak
+
+\begin{enumerate}
+    \item Jika frame owner-nya bukan milik page directory yang aktif, spare
+    \item Ambil PTE, jika null atau tidak present, spare
+    \item Jika access bit false, jangan spare
+    \item Jika access bit true, set as 0
+    \item Flush tlb di frame vaddr frame
+    \item Jangan spare frame
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    uint32_t swap_clock_pick_victim(uint32_t *hand, bool (*spare)(void *ctx, uint32_t frame), void *ctx)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Buat clock algorithm nyari page frame yang bakal dikorbanin ke dalam disk.
+
+\begin{enumerate}
+    \item Hitung user frame count (area memory user)
+    \item Lakukan dua kali putaran untuk algoritmanya
+    \item Di setiap iterasi, simpan hand (yang lagi ditunjuk clock) ke frame, terus geser hand (ada wrap-around). Misal frame belum di-map di page frame map dan tidak swappable, maka next iterasi. Lalu cek apakah frame di-spare. Kalau nggak, return frame-nya.
+    \item Return invalid frame kalo ga ketemu
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    static volatile struct PageTableEntry *vaddr_pte(struct PageDirectory *page_dir, uint32_t vaddr)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Return PTE dari vaddr.
+
+\begin{lstlisting}[language=c]
+    bool swap_out_one(struct PageDirectory *page_dir)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Swap out dari memori ke disk, pada page dir tertentu. 
+\begin{enumerate}
+    \item Ambil victim frame, jika invalid return false
+    \item Ambil frame vaddr, lalu ambil PTE-nya
+    \item Ambil slot, kalo invalid return false
+    \item Call swap write page pada slot, set PTE as swapped, lalu flush tlb vaddr
+    \item Atur ulang state frame: page frame map as false, vaddr as 0, swappable as false, owner as NULL, tambahkan free page frame count, lalu tambahkan jumlah swap out. Return true
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    bool swap_in(struct PageDirectory *page_dir, void *vaddr)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Melakukan swap in dari disk ke memori. Cari vaddr di page dir tertentu.
+
+\begin{enumerate}
+    \item Ambil PTE dari page dir dan vaddr. Ada magic untuk mengubah vaddr menjadi page (hapus 12 bit terbawah). Kalo NULL atau tidak swapped, return false.
+    \item Ambil slot dan free frame. Kalo frame invalid, return false
+    \item Atur state frame: swappable true, vaddr page, owner page dir.
+    \item Update page table entry pada page dir dengan flag present, write, user semua true
+    \item Clear swapped PTE, read swap page ke memori, lalu free slot dan atur swap in count
+\end{enumerate}
+
+\subsection{Page Fault Panic}
+
+Bagian ini masih berada di swap.c, tapi tujuannya fokus ke page fault handling. Yang penting page fault handler mengeluarkan panic message pada saat page fault.
+
+\section{Inserter}
+
+Buat masukin file atau folder ke disk kita dari luar. Pretty straightforward, agak malas menjelaskannya. Cara pakai \texttt{./inserter <file or folder to insert> <parent inode index> <storage>}
+
+\section{Perubahan GDT}
+
+\subsection{Task State Segment}
+
+Pada milestone ini, kita akan melakukan syscall (transisi kernel mode ke user mode). Mari kita bayangkan dulu kalo pindah dari kernel mode ke user mode, gimana caranya kernel kita ingat apa yang disimpan sebelum pindah ke user mode? Pakai task state segment (TSS).
+
+\texttt{TSSEntry} memuat TSS sebelumnya, esp kernel / esp0 (stack pointer), dan ss kernel / ss0 (stack segment), and some unused variables. Yang paling penting disini adalah esp dan ss, karena nunjuk ke stack kernel.
+
+Pada interrupt.c, dilakukan inisialisasi untuk TSS Entry. ss0 di-set sebagai GDT kernel data segment selector, sedangkan esp0 di-set sebagai base stack frame (ebp) + 8. Inisialisasi dilakukan melalui fungsi \texttt{void set\_tss\_kernel\_current\_stack(void)}
+
+\subsection{User Segment Descriptor}
+
+Sedikit perubahan pada gdt.c, karena kita menambahkan ring 3 (user mode). Kita menambahkan user code descriptor dan user data descriptor yang mirip kernel descriptor, tapi privilege-nya di-set sebagai 0x3.
+
+Kita juga menambahkan entry TSS dan fungsi \texttt{void gdt\_install\_tss(void)}. Install buat ngisi TSS di GDT sendiri.
+
+Note: user code segment descriptor = 0x18, user data segment descriptor = 0x20, gdt tss selector = 0x28. just offset math of the entries.
+
+\section{Program Entrypoint}
+
+Biasanya di C, kita mulai dari main. Tapi kita gak mau start dari main di sini, kita mau mulai dari \_start. Maka dari itu, kita butuh implementasi crt0 sendiri. Terlihat di crt0.s
+
+\section{Program Execution}
+
+Kita mulai main assembly di sini. Fungsi yang diimplementasikan adalah kernel execute user program dan set tss register. Di x86, gabisa langsung lompat ke user, jadi ada trickery interrupt return typeshi.
+
+Tentang iret: Bedanya dengan ret biasa, kalo iret selain nyimpen instruction pointer (eip dkk), juka menyimpan code segment dan flags register, restore privilege levels. Intinya dia bisa restore CPU state lebih dari ret simply said.
+
+Nilai yang di-pop dari stack iret adalah EIP, CS, EFLAGS, ESP, dan SS secara berurutan. Push-nya berarti kebalikannya: SS -> ESP -> EFLAGS -> CS -> EIP
+
+Kernel Execute User Program:
+\begin{enumerate}
+    \item Atur segment register data ke ring 3. Pertama-tama ambil segment data user (0x20) dan | dengan 0x3, lalu aplikasikan ke segment register ds, es, fs, gs supaya akses ring 3 juga.
+    \item Ambil argumen pada [esp+4] (pada contoh dimas ukin ke ecx).
+    \item Susun stack frame untuk iret: Push SS (0x20 | 0x3), ESP user (virtual address + 0x400000 - 4, biar di batas atas), EFLAGS (pushf), CS (0x18 | 0x3), EIP (the virtual address itself)
+\end{enumerate}
+
+Set TSS Register:
+Set 0x28 | 0, lalu load task register. Basically nyimpen posisi TSS pada GDT dengan privilege ring 0 di Task Register (TR).
+
+\section{Update Kernel}
+
+Di kernel, kita bisa mempersiapkan TSS dengan fungsi install TSS dan set TSS register. Alokasi first 4 KiB virtual memory di virtual address 0. Write shell dari disk ke memory, set TSS kernel current stack, lalu execute user program di 0 (in this case, kita mau nge-run shell yang udah diinsert, or program apapun).
+
+\section{Shell Implementation}
+
+Selamat datang di bagian terakhir dokumen M3. Kita akan implementasi shell di user mode. Of course, berbagai command akan ada interaksinya dengan hardware, jadi dibutuhkan yang kita sebut system calls.
+
+\subsection{Syscalls}
+Of course, user mode tidak bisa langsung akses ke hardware. Istilahnya harus izin dulu melalui syscalls untuk pindah ke kernel mode dan mengakses hardware. Syscalls akan menggunakan register CPU seperti eax, ebx, ecx, dan edx; eax untuk nomor fitur, sisanya sesuai kebutuhan, sesuai konvensi aja. Untuk memudahkan, bisa dibuat tabel. 
+
+% Pastikan menambahkan \usepackage{multirow} di preamble dokumen Anda
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\multirow{2}{*}{\textbf{Service}} & \multirow{2}{*}{\textbf{eax}} & \multicolumn{3}{c|}{\textbf{Parameter}} \\ \cline{3-5} 
+ &  & \textbf{ebx} & \textbf{ecx} & \textbf{edx} \\ \hline
+FS \texttt{read}() & 0 & \begin{tabular}[c]{@{}c@{}}Pointer\\ \texttt{EXT2DriverRequest}\end{tabular} & Pointer return code & - \\ \hline
+FS \texttt{read\_directory}() & 1 & Pointer request & Pointer return code & - \\ \hline
+FS \texttt{write}() & 2 & Pointer request & Pointer return code & - \\ \hline
+FS \texttt{delete}() & 3 & Pointer request & Pointer return code & - \\ \hline
+\begin{tabular}[c]{@{}l@{}}Keyboard I/O\\ \texttt{getchar}()\end{tabular} & 4 & Pointer char & - & - \\ \hline
+Text output \texttt{putchar}() & 5 & Char value & Text color & - \\ \hline
+Text output \texttt{puts}() & 6 & Pointer char buffer & Char count & Text color \\ \hline
+Activate keyboard input & 7 & - & - & - \\ \hline
+\multicolumn{1}{|c|}{...} & ... & ... & ... & ... \\ \hline
+\end{tabular}
+\end{table}
+
+Note: cpu.stack.esp dan cpu.stack.ebp adalah milik kernel. Kalo mau akses yang punya program/user, itu ada di interrupt stack.
+
+\subsection{Inter-privilege Interrupt}
+
+Kita manfaatin interrupt untuk syscall-nya, obv melalui main interrupt handler. Kode interrupt-nya adalah 0x30 yang bakal pass interrupt frame ke fungsi syscall.
+
+Fungsi syscall IPI kurang lebih seperti ini:
+\begin{lstlisting}[language=c]
+    void syscall(struct InterruptFrame frame) {
+        // Cast ebx/ecx from pushad frame into user-space request and return-code pointers
+        switch (frame.cpu.general.eax) {
+            case 0:
+                \dots
+        \dots
+        }
+    }
+\end{lstlisting}
+
+Ada juga versi program:
+
+\begin{lstlisting}[language=c]
+    void syscall(uint32_t eax, uintptr_t ebx, uintptr_t ecx, uintptr_t edx) {
+        __asm__ volatile("int $0x30" : : "a"(eax), "b"(ebx), "c"(ecx), "d"(edx) : "memory");
+    }
+\end{lstlisting}
+
+Lah, lalu apa fungsinya si syscall di syscall.c, mas? Well, syscall.c ini adalah untuk si programnya. Jadi dia masukin sesuai konvensi yang kita tetapin. Interrupt dengan kode 0x30 di-ekseksusi dan masuk ke ring 0. Di ring 0, syscall frame dijalanin. Di interrupt frame ini, actually hal-hal berkaitan dengan hardware dijalankan. Contohnya bisa dilihat sendiri.
+
+\subsection{Shell Implementation}
+
+Oh boy, bagian ini mungkin juga akan cukup panjang. Let's start.
+
+Notice bahwa kita melakukan linking dengan user-shell supaya kita bisa jalankan main di user-shell.c. Di sini, \texttt{shell\_run()} akan dijalankan. Lalu, shell run sendiri berisi apa? Shell run menginisiasi dengan syscall nomor 7 (aktivasi keyboard), lalu menjalankan program looping yang:
+
+\begin{enumerate}
+    \item Menjalankan shell print prompt yang menampilkan prompt shell pada umumnya (nama OS, current working directory)
+    \item Read line yang dimasukin user
+    \item Eksekusi line tersebut
+\end{enumerate}
+
+Shell menggunakan REPL (Read-Eval-Print) loop, dan diimplementasikan di sini. Sebelum masuk ke fungsi-fungsinya, ada baiknya memahami dulu header filenya dan cek what is actually happening.
+
+\begin{enumerate}
+    \item ShellIO: Untuk input output pada shell. Jadi ketika kita input masuk sini, yang bakal di output ada di sini juga. Berguna karena kita bakal harus bisa pipelining. Yang penting adalah in menunjuk ke stdin dari stage sebelumnya (saat pipelining), out adalah stdout-nya.
+    \item command\_fn : Fungsi dlm fungsi typeshi. Standard-nya aja ada argc, argv, dan ShellIO. Ini dipake buat bentukan umum commands di shell sendiri.
+    \item ShellStage: Jika kita ingin pipelining, each command bakal di-tokenize. Jadi setiap command dipisah menjadi satu stage.
+    \item ShellDirEntry: Representasi directory entry pada EXT2 supaya gampang diproses command.
+    \item ShellDirIter: Semacam kursor untuk mengiterasi seluruh isi direktori.
+    \item ShellPath: Path sebuah file atau folder dari suatu parent
+    \item ShellCommand: pasangan nama dan juga function pointernya.
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void shell_print_prompt(void);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Print prompt shell semacam nama OS, current working directory, pake shell puts.
+
+\begin{lstlisting}[language=c]
+    void shell_read_line(char *line, uint32_t cap)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Baca line. Terima input keyboard pake syscall nomor 4. End loop kalo enter, sesuain juga kalo backspace.
+
+\begin{lstlisting}[language=c]
+    void shell_execute_line(char *line);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Cek jumlah stages dengan shell parse. Kalo valid (>= 0), ambil semua command pada setiap stage. Construct sebuah ShellIO dan proses di setiap stage. At the end, io.out juga ditulis, finishing the REPL thingy.
+
+\begin{lstlisting}[language=c]
+    static command_fn find_command(const char *name);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Cek nama dengan commands pada struct command fn array dan return command tersebut.
+
+\begin{lstlisting}[language=c]
+    bool shell_set_cwd(uint32_t inode, const char *name)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Mengubah cwd dengan path pada name. Pretty complex string handling. Ujung-ujungnya kalo everything's good, inode cwd bakal diset ke inode, terus cwd path bakal menuju ke directory tersebut.
+
+Bagian boring: \texttt{util.c} isinya something like shell error, shell write, blablabla. untuk input output ke framebuffer shell basically and other stuff yang bisa membantu. Pretty self-explanatory, bisa dilihat sendiri. \texttt{parser.c} untuk tokenizing, shell parse.
+
+Pada fs.c, ada beberapa implementasi filesystem pada shell.
+
+\begin{lstlisting}[language=c]
+    int8_t shell_fs(uint32_t service, struct EXT2DriverRequest *request);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Abstraksi syscall aja, karena mostly but yang filesystem konvensinya mirip-mirip.
+
+\begin{lstlisting}[language=c]
+    bool shell_dir_open(struct ShellDirIter *it, uint32_t dir_inode);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Read directory, tapi dari shell.
+
+\begin{lstlisting}[language=c]
+    bool shell_dir_next(struct ShellDirIter *it, struct ShellDirEntry *entry)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Go to next entry pake shell.
+
+\begin{lstlisting}[language=c]
+    uint32_t shell_dir_find(uint32_t dir_inode, const char *name, uint32_t name_len, uint8_t type)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Cari entri dengan tipe tertentu dari shell
+
+Shell resolve dir dan shell resolve parent untuk resolve path aja.
+
+\begin{lstlisting}[language=c]
+    int8_t shell_read_file(const char *path, char *buf, uint32_t cap);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Read file dari shell.
+
+Masuk ke bagian parser.c
+
+\begin{lstlisting}[language=c]
+    int shell_parse(char *line, struct ShellStage *stages, uint32_t max_stages, const char **error)
+\end{lstlisting}
+
+\textbf{Penjelasan:} Parse hasil input line di shell, return jumlah stage, simpan ShellStage. Ada juga fungsi \texttt{tokenize} yang menjadi helper untuk tokenisasi stage-nya.
+
+\subsection{Commands}
+
+Oke, boring part's over. Mari kita ke commands commands-nya.
+
+\begin{lstlisting}[language=c]
+    void cmd_cat(int argc, char **argv, struct ShellIO *io);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Fungsi cat, untuk display isi file, bisa untuk pass isi sebagai bentuk pipelining juga.
+
+\begin{enumerate}
+    \item Jika jumlah argumen kurang dari dua, cek apakah shell io sudah terisi. Jika sudah, pass ke input shell io. Kalau belum, call shell error. Lalu return.
+    \item Ambil argumen sebagai path, lalu call shell read file di path tersebut ke shell file buffer. Cek kode-nya dan kalo ada error code, panggil shell error.
+    \item Puts ke shell io hasil bacaan dari shell file buffer.
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void cmd_cd(int argc, char **argv, struct ShellIO *io);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Fungsi cd untuk change directory.
+
+\begin{enumerate}
+    \item Jika argumen lebih dari dua, call shell error. Return.
+    \item Jika argumen 2, ambil argumen sebagai path. Jika hanya 1, pakai path di "/". Panggil \texttt{shell\_resolve\_dir(path, \&inode)}, lalu \texttt{shell\_set\_cwd(inode, path)}. Handle error untuk both.
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void cmd_grep(int argc, char **argv, struct ShellIO *io);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Fungsi grep untuk mencari specific pattern
+
+\begin{enumerate}
+    \item Error handling jika jumlah argumen kurang atau input shell null
+    \item Jika jumlah argumen 3, call shell read file dan simpan teks-nya
+    \item Gunakan fungsi helper contains untuk mencari apakah suatu line contains pattern tertentu, lalu gunakan write ke shell io line yang bersangkutan.
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void cmd_ls(int argc, char **argv, struct ShellIO *io);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Fungsi ls untuk list directory.
+
+\begin{enumerate}
+    \item Error handling jika argumen terlalu banyak.
+    \item Jika jumlah argumen satu, ambil current directory, kalo gak ambil dari argumen.
+    \item Resolve dir, lalu open, ada error handling juga.
+    \item Iterate dir dengan shell dir next, kalo is dot entry skip, sisanya tulis ke io nama file atau directory-nya
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void cmd_ls(int argc, char **argv, struct ShellIO *io);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Fungsi ls untuk list directory.
+
+\begin{enumerate}
+    \item Error handling jika argumen terlalu banyak.
+    \item Jika jumlah argumen satu, ambil current directory, kalo gak ambil dari argumen.
+    \item Resolve dir, lalu open, ada error handling juga.
+    \item Iterate dir dengan shell dir next, kalo is dot entry skip, sisanya tulis ke io nama file atau directory-nya
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void cmd_mkdir(int argc, char **argv, struct ShellIO *io);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Fungsi mkdir untuk membuat directory baru.
+
+\begin{enumerate}
+    \item Error handling jika argumen kurang
+    \item Untuk setiap argumen, resolve parent, siapin request, syscal shell fs untuk write. Error handling juga
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void cmd_cp(int argc, char **argv, struct ShellIO *io);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Fungsi copy file ke directory
+
+\begin{enumerate}
+    \item Error handling jika argumen janggal (kurang, terlalu banyak), resolve path dan handle error kalo directory, lalu call cp read exact file.
+    \item Resolve paths, make sure source bukan directory.
+    \item Call read exact file dan handle sesuai return value-nya untuk source file
+    \item Resolve path, handle more errors, read directory lalu write file copy ke directory target
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+    void cmd_rm(int argc, char **argv, struct ShellIO *io);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Fungsi copy file ke directory
+
+\begin{enumerate}
+    \item Error handling jika argumen janggal (kurang, terlalu banyak), oya ini ada option kek -r jug. Resolve path as always dan more error hnlding
+    \item Cek rekursif atau non recursive dan handle accordingly.
+\end{enumerate}
+
+Well, effortny keliatan sudh cukup capek.
+
+\section{The Abyss}
+
+Kehadiran Kratos dan 18 pengikutnya telah mengganggu keseimbangan alam. Demi Ares, alam suatu saat akan menerkam mereka semua. Berdasarkan hukum rimba, Law of the Jungle, Welcome to the Jungle, apapun sebutannya, hanya mereka yang bisa beradaptasi yang mampu hidup dan bertahan sebagai lengan jam yang senantiasa bergerak dan menonjolkan keberaniannya dalam tiap aspek kehidupan.
+
+Visi global yang akan membawa umat manusia menuju kemuliaan abadi adalah lepasnya individualisme dan perubahan bentuk energinya menjadi kemangkusan dan kesangkilan. Layaknya sebuah halaman pada buku; rapuh demi rapuh akibat rayap, air, angin, namun terbanting, terbanting, dan terbentuk, tiap lembar merepresentasikan proses hidup yang berbeda dengan tujuan mikro yang jua berbeda, namun dengan satu tujuan utama yaitu kebangkitan Ares.
+
+Namun, di mana ada dewa, di situ ada manusia. Dewa hidup di realm dewa, dan manusia hidup di realm manusia. Keduanya mungkin dapat tercampur suatu saat, namun manusia biasa tidak akan mencapai rumah-rumah para dewa dewi yang senantiasa mengawasi seluk beluk umat yang baru.
+
+Dan pada akhirnya, umat yang baru ini akan sampai di titik di mana mereka akan memperjuangkan proses utama yang telah mereka jalankan dan lalui sejak awal. Tiap titik, garis, bidang, dan ruang menggambarkan bintang dan konstelasi layaknya elemen-elemen matriks yang dapat didekomposisi dengan singular-value decomposition menuju kesimpulan yang jelas dengan principal component analysis. Cangkang diri manusia dengan segala egonya akan digantikan oleh cangkang baru, yang mewakili operasi utama manusia yang produktif, pemberani, dan haus kemenangan. Di sini, perjalanan mereka menuju klimaks, dan akhir segera datang.
