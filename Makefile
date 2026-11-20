@@ -29,15 +29,19 @@ LFLAGS        = -T $(SOURCE_FOLDER)/linker.ld -melf_i386
 IFLAGS        = -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -input-charset utf8 -quiet -boot-info-table
 
 run: all
-	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -drive file=$(OUTPUT_FOLDER)/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -rtc base=localtime \
+		-drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
+		-cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 all: build
 build: iso
 clean:
-	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user $(OUTPUT_FOLDER)/inserter
+	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/inserter
+	rm -rf $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user
 	rm -rf $(OUTPUT_FOLDER)/hello $(OUTPUT_FOLDER)/hello_elf $(HELLO_OBJECT_DIR)
 	rm -rf $(OUTPUT_FOLDER)/clock $(OUTPUT_FOLDER)/clock_elf $(CLOCK_OBJECT_DIR)
 
 disk:
+	@mkdir -p $(OUTPUT_FOLDER)
 	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 8M
 
 HOST_CC       = cc
@@ -74,7 +78,8 @@ HELLO_OBJECTS    = $(addprefix $(HELLO_OBJECT_DIR)/,crt0.o hello.o syscall.o)
 CLOCK_OBJECT_DIR = $(OUTPUT_FOLDER)/user-clock
 CLOCK_OBJECTS    = $(addprefix $(CLOCK_OBJECT_DIR)/,crt0.o clock.o)
 
-.PHONY: user-hello insert-hello user-clock insert-clock
+.PHONY: user-shell user-hello user-clock user-programs
+.PHONY: inserter insert-shell insert-hello insert-clock insert-all
 
 $(USER_CRT0): $(SOURCE_FOLDER)/crt0.s
 	@mkdir -p $(dir $@)
@@ -109,6 +114,8 @@ user-clock:
 	@size --target=binary $(OUTPUT_FOLDER)/clock
 	@rm -rf $(CLOCK_OBJECT_DIR)
 
+user-programs: user-shell user-hello user-clock
+
 inserter:
 	@mkdir -p $(OUTPUT_FOLDER)
 	@$(CC) -Wno-builtin-declaration-mismatch -g -I$(SOURCE_FOLDER) \
@@ -128,6 +135,12 @@ insert-hello: inserter user-hello
 insert-clock: inserter user-clock
 	@echo Inserting clock into root directory...
 	@cd $(OUTPUT_FOLDER); ./inserter clock 2 $(DISK_NAME).bin
+
+insert-all: inserter user-programs
+	@echo Inserting shell, hello and clock into root directory...
+	@cd $(OUTPUT_FOLDER) && ./inserter -f shell 2 $(DISK_NAME).bin
+	@cd $(OUTPUT_FOLDER) && ./inserter -f hello 2 $(DISK_NAME).bin
+	@cd $(OUTPUT_FOLDER) && ./inserter -f clock 2 $(DISK_NAME).bin
 
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
