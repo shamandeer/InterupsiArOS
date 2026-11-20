@@ -34,6 +34,7 @@ all: build
 build: iso
 clean:
 	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user $(OUTPUT_FOLDER)/inserter
+	rm -rf $(OUTPUT_FOLDER)/hello $(OUTPUT_FOLDER)/hello_elf $(HELLO_OBJECT_DIR)
 
 disk:
 	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 8M
@@ -67,6 +68,10 @@ SHELL_SOURCES = $(wildcard $(SOURCE_FOLDER)/shell/*.c) $(SOURCE_FOLDER)/user-she
 SHELL_OBJECTS = $(patsubst $(SOURCE_FOLDER)/%.c,$(OUTPUT_FOLDER)/user/%.o,$(SHELL_SOURCES))
 USER_CRT0     = $(OUTPUT_FOLDER)/user/crt0.o
 USER_LFLAGS   = -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386
+HELLO_OBJECT_DIR = $(OUTPUT_FOLDER)/user-hello
+HELLO_OBJECTS    = $(addprefix $(HELLO_OBJECT_DIR)/,crt0.o hello.o syscall.o)
+
+.PHONY: user-hello insert-hello
 
 $(USER_CRT0): $(SOURCE_FOLDER)/crt0.s
 	@mkdir -p $(dir $@)
@@ -82,6 +87,16 @@ user-shell: $(USER_CRT0) $(SHELL_OBJECTS)
 	@rm -rf $(OUTPUT_FOLDER)/user
 	@echo Linking user shell, generate flat binary and shell_elf...
 
+user-hello:
+	@mkdir -p $(HELLO_OBJECT_DIR)
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(HELLO_OBJECT_DIR)/crt0.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/hello.c -o $(HELLO_OBJECT_DIR)/hello.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/shell/syscall.c -o $(HELLO_OBJECT_DIR)/syscall.o
+	@$(LIN) $(USER_LFLAGS) --oformat=binary $(HELLO_OBJECTS) -o $(OUTPUT_FOLDER)/hello
+	@$(LIN) $(USER_LFLAGS) --oformat=elf32-i386 $(HELLO_OBJECTS) -o $(OUTPUT_FOLDER)/hello_elf
+	@size --target=binary $(OUTPUT_FOLDER)/hello
+	@rm -rf $(HELLO_OBJECT_DIR)
+
 inserter:
 	@mkdir -p $(OUTPUT_FOLDER)
 	@$(CC) -Wno-builtin-declaration-mismatch -g -I$(SOURCE_FOLDER) \
@@ -93,6 +108,10 @@ inserter:
 insert-shell: inserter user-shell
 	@echo Inserting shell into root directory...
 	@cd $(OUTPUT_FOLDER); ./inserter -f shell 2 $(DISK_NAME).bin
+
+insert-hello: inserter user-hello
+	@echo Inserting hello into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter -f hello 2 $(DISK_NAME).bin
 
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
