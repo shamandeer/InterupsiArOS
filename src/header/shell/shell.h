@@ -31,6 +31,9 @@ enum SyscallNumber {
     SYS_CLEAR_SCREEN      = 8,
     SYS_SET_CURSOR        = 9,
     SYS_EXIT              = 10,
+    SYS_EXEC              = 11, // ebx = EXT2DriverRequest*, ecx = int32_t* retcode, edx = uint32_t* pid
+    SYS_KILL              = 12, // ebx = pid, ecx = int8_t* result (PROCESS_KILL_*)
+    SYS_PROCESS_INFO      = 16, // ebx = ProcessInfo[], ecx = capacity, edx = uint32_t* count
 };
 
 struct ShellIO {
@@ -86,6 +89,7 @@ void shell_error(const char *cmd, const char *arg, const char *msg);
 void shell_io_write(struct ShellIO *io, const char *data, uint32_t len);
 void shell_io_putc(struct ShellIO *io, char c);
 void shell_io_puts(struct ShellIO *io, const char *s);
+uint32_t shell_io_putu(struct ShellIO *io, uint32_t value);
 
 
 /* fs.c */
