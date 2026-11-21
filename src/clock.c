@@ -1,7 +1,7 @@
 #include <stdbool.h>
 #include "header/driver/cmos.h"
 
-// Reserved in interrupt.c. Sync with the shared syscall numbers in Stage 2.
+// Syscall numbers, synced with src/cpu/interrupt.c
 #define SYS_GET_TIME    13
 #define SYS_PUT_CHAR_AT 14
 
