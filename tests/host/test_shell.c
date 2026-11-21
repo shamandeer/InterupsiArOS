@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "header/shell/shell.h"
+#include "header/process/process-info.h"
 
 void fake_disk_reset(void);
 
@@ -29,9 +30,59 @@ static void screen_append(const char *data, size_t len) {
     screen[screen_len] = '\0';
 }
 
+// emulated process table: shell is PID 0 and RUNNING, exec appends READY processes
+static struct ProcessInfo procs[PROCESS_INFO_COUNT_MAX];
+static uint32_t proc_count, next_pid;
+
+static void reset_processes(void) {
+    memset(procs, 0, sizeof(procs));
+    strcpy(procs[0].name, "shell");
+    procs[0].state = PROCESS_INFO_STATE_RUNNING;
+    proc_count = 1;
+    next_pid = 1;
+}
+
+static void emulate_exec(const struct EXT2DriverRequest *request, int32_t *retcode, uint32_t *pid) {
+    if (proc_count == PROCESS_INFO_COUNT_MAX) {
+        *retcode = 1;
+        return;
+    }
+    struct ProcessInfo *p = &procs[proc_count++];
+    memset(p, 0, sizeof(*p));
+    memcpy(p->name, request->name, request->name_len);
+    p->pid = next_pid++;
+    p->state = PROCESS_INFO_STATE_READY;
+    *pid = p->pid;
+    *retcode = 0;
+}
+
+static int8_t emulate_kill(uint32_t pid) {
+    if (pid == 0)
+        return PROCESS_KILL_FORBIDDEN;
+    for (uint32_t i = 0; i < proc_count; i++) {
+        if (procs[i].pid == pid) {
+            memmove(&procs[i], &procs[i + 1], (proc_count - i - 1) * sizeof(procs[0]));
+            proc_count--;
+            return PROCESS_KILL_SUCCESS;
+        }
+    }
+    return PROCESS_KILL_NOT_FOUND;
+}
+
 void syscall(uint32_t eax, uintptr_t ebx, uintptr_t ecx, uintptr_t edx) {
-    (void) edx;
     switch (eax) {
+        case SYS_EXEC:
+            emulate_exec((const struct EXT2DriverRequest *) ebx, (int32_t *) ecx, (uint32_t *) edx);
+            break;
+        case SYS_KILL:
+            *(int8_t *) ecx = emulate_kill((uint32_t) ebx);
+            break;
+        case SYS_PROCESS_INFO: {
+            uint32_t n = proc_count < ecx ? proc_count : (uint32_t) ecx;
+            memcpy((void *) ebx, procs, n * sizeof(procs[0]));
+            *(uint32_t *) edx = n;
+            break;
+        }
         case SYS_FS_READ:
             *(int8_t *) ecx = read(*(struct EXT2DriverRequest *) ebx);
             break;
@@ -311,6 +362,138 @@ static void test_cwd_overflow(void) {
     CHECK_STR(prompt(), expected);
 }
 
+static void test_script(void) {
+    // 1. basic script: mkdir + ls
+    reset_shell();
+    put_file("setup.sh", "mkdir one\nmkdir two\nls\n");
+    CHECK_STR(run("sh setup.sh"), "setup.sh\none/\ntwo/\n");
+
+    // 2. ./name.sh and /name.sh give the same result as sh name.sh
+    reset_shell();
+    put_file("setup.sh", "mkdir one\nmkdir two\nls\n");
+    CHECK_STR(run("./setup.sh"), "setup.sh\none/\ntwo/\n");
+    reset_shell();
+    put_file("setup.sh", "mkdir one\nmkdir two\nls\n");
+    CHECK_STR(run("/setup.sh"), "setup.sh\none/\ntwo/\n");
+
+    // 3. comments, shebang, blank lines, whitespace-only lines and CRLF are handled
+    reset_shell();
+    put_file("c.sh", "#!/bin/sh\n# a comment\n\n   \t \n  # indented comment\nmkdir x\r\n\r\nls\r\n");
+    CHECK_STR(run("sh c.sh"), "c.sh\nx/\n");
+
+    // 4. cd inside the script changes the shell's cwd after it ends
+    reset_shell();
+    put_file("go.sh", "mkdir docs\ncd docs\nmkdir inside\n");
+    CHECK_STR(run("sh go.sh"), "");
+    CHECK_STR(prompt(), "InterupsiArOS:/docs$ ");
+    CHECK_STR(run("ls"), "inside/\n");
+    // the script path resolves from the cwd, and its lines run relative to the cwd at that moment
+    CHECK_STR(run("sh ../go.sh"), "");
+    CHECK_STR(prompt(), "InterupsiArOS:/docs/docs$ ");
+
+    // 5. pipeline inside a script
+    reset_shell();
+    put_file("a.txt", "alpha\nbeta\nalphabet\n");
+    put_file("p.sh", "cat a.txt | grep alpha\nls | grep txt\n");
+    CHECK_STR(run("sh p.sh"), "alpha\nalphabet\na.txt\n");
+
+    // 6. an unknown command shows its error and the script goes on
+    reset_shell();
+    put_file("e.sh", "mkdir before\nnope arg\nmkdir after\nls\n");
+    CHECK_STR(run("sh e.sh"), "nope: command not found\ne.sh\nbefore/\nafter/\n");
+
+    // 7. a script calling another script
+    reset_shell();
+    put_file("outer.sh", "mkdir o1\nsh inner.sh\n./inner2.sh\nls\n");
+    put_file("inner.sh", "mkdir i1\n");
+    put_file("inner2.sh", "mkdir i2\n");
+    CHECK_STR(run("sh outer.sh"), "outer.sh\ninner.sh\ninner2.sh\no1/\ni1/\ni2/\n");
+
+    // 8. a script calling itself stops at the depth limit instead of hanging
+    reset_shell();
+    put_file("self.sh", "sh self.sh\n");
+    CHECK_STR(run("sh self.sh"), "sh: self.sh: maximum script depth exceeded\n");
+    // depth counter is back to 0 afterwards, so another script still runs
+    put_file("ok.sh", "mkdir ok\n");
+    CHECK_STR(run("sh ok.sh"), "");
+    CHECK_STR(run("ls ok"), "");
+
+    // 9. error cases
+    reset_shell();
+    put_file("a.sh", "mkdir ran\n");
+    CHECK_STR(run("mkdir d"), "");
+    CHECK_STR(run("sh nope.sh"), "sh: nope.sh: no such file\n");
+    CHECK_STR(run("./nope.sh"), "sh: ./nope.sh: no such file\n");
+    CHECK_STR(run("sh d"), "sh: d: not a file\n");
+    CHECK_STR(run("sh"), "sh: missing operand\n");
+    CHECK_STR(run("sh a.sh | grep x"), "sh: cannot be used in a pipeline\n");
+    CHECK_STR(run("ls | ./a.sh"), "sh: cannot be used in a pipeline\n");
+    CHECK_STR(run("ls | sh a.sh | grep x"), "sh: cannot be used in a pipeline\n");
+    CHECK_STR(run("ls"), "a.sh\nd/\n");
+
+    // line longer than SHELL_LINE_MAX - 1 is reported and skipped, the rest still runs
+    static char long_script[SHELL_LINE_MAX + 64];
+    strcpy(long_script, "mkdir first\nmkdir ");
+    size_t used = strlen(long_script);
+    memset(long_script + used, 'z', SHELL_LINE_MAX);
+    strcpy(long_script + used + SHELL_LINE_MAX, "\nmkdir last\n");
+    put_file("long.sh", long_script);
+    CHECK_STR(run("sh long.sh"), "sh: long.sh: line 2: line too long\n");
+    CHECK_STR(run("ls"), "a.sh\nd/\nlong.sh\nfirst/\nlast/\n");
+
+    // a line of exactly SHELL_LINE_MAX - 1 characters still runs
+    char exact[SHELL_LINE_MAX + 8];
+    memset(exact, ' ', SHELL_LINE_MAX - 1);
+    memcpy(exact + SHELL_LINE_MAX - 1 - 2, "ls", 2);
+    strcpy(exact + SHELL_LINE_MAX - 1, "\n");
+    put_file("exact.sh", exact);
+    CHECK_STR(run("sh exact.sh"), "a.sh\nd/\nlong.sh\nfirst/\nlast/\nexact.sh\n");
+
+    // 10. cat inside a script does not overwrite the rest of the script
+    reset_shell();
+    static char text[2000];
+    memset(text, 'q', sizeof(text) - 1);
+    text[sizeof(text) - 1] = '\0';
+    put_file("q.txt", text);
+    put_file("cat.sh", "cat q.txt\nmkdir after\nls after\ngrep q q.txt | grep zzz\nmkdir end\n");
+    char expected[sizeof(text) + 8];
+    snprintf(expected, sizeof(expected), "%s\n", text);
+    CHECK_STR(run("sh cat.sh"), expected);
+    CHECK_STR(run("ls"), "q.txt\ncat.sh\nafter/\nend/\n");
+}
+
+static void test_process_commands(void) {
+    reset_shell();
+    reset_processes();
+    put_file("clock", "\xEB\xFE");
+    CHECK_STR(run("mkdir bin"), "");
+
+    CHECK_STR(run("exec clock"), "[exec] clock berjalan dengan PID 1\n");
+    CHECK_STR(run("ps"),
+        "PID    NAME             STATE\n"
+        "0      shell            RUNNING\n"
+        "1      clock            READY\n");
+    CHECK_STR(run("ps | grep clock"), "1      clock            READY\n");
+    CHECK_STR(run("kill 1"), "[kill] PID 1 dihentikan\n");
+    CHECK_STR(run("ps"), "PID    NAME             STATE\n0      shell            RUNNING\n");
+    CHECK_STR(run("kill 1"), "[kill] PID 1 tidak ditemukan\n");
+    CHECK_STR(run("kill 0"), "[kill] tidak bisa menghentikan init process\n");
+    CHECK_STR(run("kill 1x"), "[kill] PID '1x' tidak valid\n");
+    CHECK_STR(run("kill 4294967296"), "[kill] PID '4294967296' tidak valid\n");
+    CHECK_STR(run("kill"), "[kill] usage: kill <pid>\n");
+    CHECK_STR(run("ps x"), "[ps] usage: ps\n");
+
+    CHECK_STR(run("exec tidakada"), "[exec] file 'tidakada' tidak ditemukan\n");
+    CHECK_STR(run("exec bin"), "[exec] file 'bin' tidak ditemukan\n");
+    CHECK_STR(run("exec"), "[exec] usage: exec <path>\n");
+    CHECK_STR(run("cd bin"), "");
+    CHECK_STR(run("exec ../clock"), "[exec] clock berjalan dengan PID 2\n");
+
+    for (int i = 2; i < PROCESS_INFO_COUNT_MAX; i++)
+        run("exec /clock");
+    CHECK_STR(run("exec /clock"), "[exec] gagal: jumlah process sudah maksimum\n");
+}
+
 int main(void) {
     test_parser();
     test_dispatch();
@@ -321,6 +504,8 @@ int main(void) {
     test_large_file();
     test_read_line();
     test_cwd_overflow();
+    test_script();
+    test_process_commands();
     printf("%d passed, %d failed\n", passes, fails);
     return fails != 0;
 }

@@ -8,6 +8,7 @@
 #include "header/filesystem/ext2.h"
 #include "header/stdlib/string.h"
 #include "header/process/scheduler.h"
+#include "header/process/process-info.h"
 
 struct TSSEntry _interrupt_tss_entry = {
     .ss0 = GDT_KERNEL_DATA_SEGMENT_SELECTOR,
@@ -107,6 +108,93 @@ void kernel_puts(const char *buf, uint32_t count, uint8_t color) {
     framebuffer_set_cursor(cursor_row, cursor_col);
 }
 
+_Static_assert(PROCESS_INFO_COUNT_MAX == PROCESS_COUNT_MAX, "process-info.h tidak sinkron dengan process.h");
+_Static_assert(PROCESS_INFO_NAME_LENGTH == PROCESS_NAME_LENGTH_MAX, "process-info.h tidak sinkron dengan process.h");
+_Static_assert(PROCESS_INFO_STATE_READY == READY && PROCESS_INFO_STATE_WAITING == WAITING
+    && PROCESS_INFO_STATE_RUNNING == RUNNING, "process-info.h tidak sinkron dengan PROCESS_STATE");
+
+// Pointer dari user harus utuh berada di bawah area kernel (higher half)
+static bool is_user_buffer(const void *ptr, uint32_t size) {
+    uint32_t addr = (uint32_t) ptr;
+    return addr != 0 && addr < KERNEL_VIRTUAL_ADDRESS_BASE && size <= KERNEL_VIRTUAL_ADDRESS_BASE - addr;
+}
+
+// Hancurkan process pemanggil lalu pindah ke process lain, tidak pernah iret ke process yang sudah mati
+__attribute__((noreturn)) static void syscall_exit(void) {
+    struct ProcessControlBlock *current = process_get_current_running_pcb_pointer();
+    if (current != NULL)
+        process_destroy(current->metadata.pid);
+    scheduler_switch_to_next_process();
+}
+
+// process_create_user_process tidak mengembalikan PID; PID selalu naik, jadi PID terbesar = process terbaru
+static uint32_t newest_process_pid(void) {
+    uint32_t pid = 0;
+    for (uint32_t i = 0; i < PROCESS_COUNT_MAX; i++)
+        if (_process_list[i].metadata.active && _process_list[i].metadata.pid > pid)
+            pid = _process_list[i].metadata.pid;
+    return pid;
+}
+
+// user_request: parent_inode + name + name_len file executable. Hasil PROCESS_CREATE_* ke *retcode, PID ke *pid
+static void syscall_exec(const struct EXT2DriverRequest *user_request, int32_t *retcode, uint32_t *pid) {
+    if (!is_user_buffer(user_request, sizeof(*user_request)) || !is_user_buffer(retcode, sizeof(*retcode))
+            || !is_user_buffer(pid, sizeof(*pid)))
+        return;
+
+    struct EXT2DriverRequest request = *user_request;
+    *pid = 0;
+    if (request.name_len == 0 || !is_user_buffer(request.name, request.name_len)) {
+        *retcode = PROCESS_CREATE_FAIL_FS_READ_FAILURE;
+        return;
+    }
+    // Nama berada di memori user pemanggil, padahal file dibaca setelah CR3 pindah ke page directory baru:
+    // salin dulu ke stack kernel yang ter-map di semua page directory
+    char name[UINT8_MAX + 1];
+    memcpy(name, request.name, request.name_len);
+    name[request.name_len] = '\0';
+    request.name         = name;
+    request.buf          = (void *) 0;
+    request.buffer_size  = PROCESS_USER_PROGRAM_SIZE;
+    request.is_directory = false;
+
+    *retcode = process_create_user_process(request);
+    if (*retcode == PROCESS_CREATE_SUCCESS)
+        *pid = newest_process_pid();
+}
+
+static void syscall_kill(uint32_t pid, int8_t *result) {
+    if (!is_user_buffer(result, sizeof(*result)))
+        return;
+    if (pid == 0) {
+        *result = PROCESS_KILL_FORBIDDEN;
+        return;
+    }
+    struct ProcessControlBlock *current = process_get_current_running_pcb_pointer();
+    if (current != NULL && current->metadata.pid == pid)
+        syscall_exit();
+    *result = process_destroy(pid) ? PROCESS_KILL_SUCCESS : PROCESS_KILL_NOT_FOUND;
+}
+
+static void syscall_process_info(struct ProcessInfo *buf, uint32_t capacity, uint32_t *count) {
+    if (capacity > PROCESS_COUNT_MAX)
+        capacity = PROCESS_COUNT_MAX;
+    if (!is_user_buffer(buf, capacity * sizeof(struct ProcessInfo)) || !is_user_buffer(count, sizeof(*count)))
+        return;
+
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < PROCESS_COUNT_MAX && n < capacity; i++) {
+        struct ProcessControlBlock *pcb = &_process_list[i];
+        if (!pcb->metadata.active)
+            continue;
+        buf[n].pid   = pcb->metadata.pid;
+        buf[n].state = (uint8_t) pcb->metadata.state;
+        memcpy(buf[n].name, pcb->metadata.name, PROCESS_INFO_NAME_LENGTH);
+        n++;
+    }
+    *count = n;
+}
+
 void syscall(struct InterruptFrame frame) {
     // Cast ebx/ecx from pushad frame into user-space request and return-code pointers
     switch (frame.cpu.general.eax) {
@@ -150,11 +238,14 @@ void syscall(struct InterruptFrame frame) {
                 cursor_col = FRAMEBUFFER_COLS - 1;
             framebuffer_set_cursor(cursor_row, cursor_col);
             break;
-        case 10: // Reserved for Chapter 4 process exit syscall
+        case 10: // exit, ebx = exit code (belum dipakai)
+            syscall_exit();
+        case 11: // exec
+            syscall_exec((const struct EXT2DriverRequest *) frame.cpu.general.ebx,
+                (int32_t *) frame.cpu.general.ecx, (uint32_t *) frame.cpu.general.edx);
             break;
-        case 11: // Reserved for exec
-            break;
-        case 12: // Reserved for KILL
+        case 12: // kill
+            syscall_kill(frame.cpu.general.ebx, (int8_t *) frame.cpu.general.ecx);
             break;
         case 13: { // get_time: ebx = pointer to struct Time in user space
             uint32_t addr = frame.cpu.general.ebx;
@@ -177,6 +268,10 @@ void syscall(struct InterruptFrame frame) {
             );
             break;
         case 15: // Reserved for heap and other stuff ntar
+            break;
+        case 16: // process info (ps)
+            syscall_process_info((struct ProcessInfo *) frame.cpu.general.ebx,
+                frame.cpu.general.ecx, (uint32_t *) frame.cpu.general.edx);
             break;
     }
 }
