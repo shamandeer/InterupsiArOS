@@ -115,6 +115,15 @@ void shell_read_line(char *line, uint32_t cap);
 void shell_execute_line(char *line);
 void shell_run(void);
 
+
+/* script.c */
+
+#define SHELL_SCRIPT_DEPTH_MAX  4
+#define SHELL_SCRIPT_BUF_SIZE   8192
+
+// runs each line of the file through shell_execute_line, in this same shell
+void shell_run_script(const char *path);
+
 /* cmd_cat.c */
 
 #endif

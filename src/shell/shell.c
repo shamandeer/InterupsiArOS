@@ -103,6 +103,23 @@ static command_fn find_command(const char *name) {
     return NULL;
 }
 
+static bool ends_with_sh(const char *name) {
+    uint32_t len = shell_strlen(name);
+    if (len < 3) {
+        return false;
+    }
+    return shell_strcmp(name + len - 3, ".sh") == 0;
+}
+
+
+static bool is_script_stage(const struct ShellStage *stage) {
+    const char *name = stage->argv[0];
+    if (shell_strcmp(name, "sh") == 0) {
+        return true;
+    }
+    return ends_with_sh(name) && find_command(name) == NULL;
+}
+
 void shell_execute_line(char *line) {
     struct ShellStage stages[SHELL_MAX_STAGES];
     command_fn run[SHELL_MAX_STAGES];
@@ -113,6 +130,26 @@ void shell_execute_line(char *line) {
         shell_error("sh", NULL, error);
         return;
     }
+
+   
+    for (int i = 0; i < count; i++) {
+        if (!is_script_stage(&stages[i])) {
+            continue;
+        }
+        if (count > 1) {
+            shell_error("sh", NULL, "cannot be used in a pipeline");
+            return;
+        }
+        if (shell_strcmp(stages[i].argv[0], "sh") != 0) {
+            shell_run_script(stages[i].argv[0]);
+        } else if (stages[i].argc < 2) {
+            shell_error("sh", NULL, "missing operand");
+        } else {
+            shell_run_script(stages[i].argv[1]);
+        }
+        return;
+    }
+
     for (int i = 0; i < count; i++) {
         run[i] = find_command(stages[i].argv[0]);
         if (run[i] == NULL) {
