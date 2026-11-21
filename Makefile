@@ -39,6 +39,7 @@ clean:
 	rm -rf $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user
 	rm -rf $(OUTPUT_FOLDER)/hello $(OUTPUT_FOLDER)/hello_elf $(HELLO_OBJECT_DIR)
 	rm -rf $(OUTPUT_FOLDER)/clock $(OUTPUT_FOLDER)/clock_elf $(CLOCK_OBJECT_DIR)
+	rm -rf $(OUTPUT_FOLDER)/spinner $(OUTPUT_FOLDER)/spinner_elf $(SPINNER_OBJECT_DIR)
 
 disk:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -77,9 +78,11 @@ HELLO_OBJECT_DIR = $(OUTPUT_FOLDER)/user-hello
 HELLO_OBJECTS    = $(addprefix $(HELLO_OBJECT_DIR)/,crt0.o hello.o syscall.o)
 CLOCK_OBJECT_DIR = $(OUTPUT_FOLDER)/user-clock
 CLOCK_OBJECTS    = $(addprefix $(CLOCK_OBJECT_DIR)/,crt0.o clock.o)
+SPINNER_OBJECT_DIR = $(OUTPUT_FOLDER)/user-spinner
+SPINNER_OBJECTS    = $(addprefix $(SPINNER_OBJECT_DIR)/,crt0.o spinner.o)
 
-.PHONY: user-shell user-hello user-clock user-programs
-.PHONY: inserter insert-shell insert-hello insert-clock insert-all
+.PHONY: user-shell user-hello user-clock user-spinner user-programs
+.PHONY: inserter insert-shell insert-hello insert-clock insert-spinner insert-all
 
 $(USER_CRT0): $(SOURCE_FOLDER)/crt0.s
 	@mkdir -p $(dir $@)
@@ -114,7 +117,16 @@ user-clock:
 	@size --target=binary $(OUTPUT_FOLDER)/clock
 	@rm -rf $(CLOCK_OBJECT_DIR)
 
-user-programs: user-shell user-hello user-clock
+user-spinner:
+	@mkdir -p $(SPINNER_OBJECT_DIR)
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(SPINNER_OBJECT_DIR)/crt0.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/spinner.c -o $(SPINNER_OBJECT_DIR)/spinner.o
+	@$(LIN) $(USER_LFLAGS) --oformat=binary $(SPINNER_OBJECTS) -o $(OUTPUT_FOLDER)/spinner
+	@$(LIN) $(USER_LFLAGS) --oformat=elf32-i386 $(SPINNER_OBJECTS) -o $(OUTPUT_FOLDER)/spinner_elf
+	@size --target=binary $(OUTPUT_FOLDER)/spinner
+	@rm -rf $(SPINNER_OBJECT_DIR)
+
+user-programs: user-shell user-hello user-clock user-spinner
 
 inserter:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -136,11 +148,16 @@ insert-clock: inserter user-clock
 	@echo Inserting clock into root directory...
 	@cd $(OUTPUT_FOLDER); ./inserter clock 2 $(DISK_NAME).bin
 
+insert-spinner: inserter user-spinner
+	@echo Inserting spinner into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter spinner 2 $(DISK_NAME).bin
+
 insert-all: inserter user-programs
 	@echo Inserting shell, hello and clock into root directory...
 	@cd $(OUTPUT_FOLDER) && ./inserter -f shell 2 $(DISK_NAME).bin
 	@cd $(OUTPUT_FOLDER) && ./inserter -f hello 2 $(DISK_NAME).bin
 	@cd $(OUTPUT_FOLDER) && ./inserter -f clock 2 $(DISK_NAME).bin
+	@cd $(OUTPUT_FOLDER) && ./inserter -f spinner 2 $(DISK_NAME).bin
 
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
