@@ -311,6 +311,106 @@ static void test_cwd_overflow(void) {
     CHECK_STR(prompt(), expected);
 }
 
+static void test_script(void) {
+    // 1. basic script: mkdir + ls
+    reset_shell();
+    put_file("setup.sh", "mkdir one\nmkdir two\nls\n");
+    CHECK_STR(run("sh setup.sh"), "setup.sh\none/\ntwo/\n");
+
+    // 2. ./name.sh and /name.sh give the same result as sh name.sh
+    reset_shell();
+    put_file("setup.sh", "mkdir one\nmkdir two\nls\n");
+    CHECK_STR(run("./setup.sh"), "setup.sh\none/\ntwo/\n");
+    reset_shell();
+    put_file("setup.sh", "mkdir one\nmkdir two\nls\n");
+    CHECK_STR(run("/setup.sh"), "setup.sh\none/\ntwo/\n");
+
+    // 3. comments, shebang, blank lines, whitespace-only lines and CRLF are handled
+    reset_shell();
+    put_file("c.sh", "#!/bin/sh\n# a comment\n\n   \t \n  # indented comment\nmkdir x\r\n\r\nls\r\n");
+    CHECK_STR(run("sh c.sh"), "c.sh\nx/\n");
+
+    // 4. cd inside the script changes the shell's cwd after it ends
+    reset_shell();
+    put_file("go.sh", "mkdir docs\ncd docs\nmkdir inside\n");
+    CHECK_STR(run("sh go.sh"), "");
+    CHECK_STR(prompt(), "InterupsiArOS:/docs$ ");
+    CHECK_STR(run("ls"), "inside/\n");
+    // the script path resolves from the cwd, and its lines run relative to the cwd at that moment
+    CHECK_STR(run("sh ../go.sh"), "");
+    CHECK_STR(prompt(), "InterupsiArOS:/docs/docs$ ");
+
+    // 5. pipeline inside a script
+    reset_shell();
+    put_file("a.txt", "alpha\nbeta\nalphabet\n");
+    put_file("p.sh", "cat a.txt | grep alpha\nls | grep txt\n");
+    CHECK_STR(run("sh p.sh"), "alpha\nalphabet\na.txt\n");
+
+    // 6. an unknown command shows its error and the script goes on
+    reset_shell();
+    put_file("e.sh", "mkdir before\nnope arg\nmkdir after\nls\n");
+    CHECK_STR(run("sh e.sh"), "nope: command not found\ne.sh\nbefore/\nafter/\n");
+
+    // 7. a script calling another script
+    reset_shell();
+    put_file("outer.sh", "mkdir o1\nsh inner.sh\n./inner2.sh\nls\n");
+    put_file("inner.sh", "mkdir i1\n");
+    put_file("inner2.sh", "mkdir i2\n");
+    CHECK_STR(run("sh outer.sh"), "outer.sh\ninner.sh\ninner2.sh\no1/\ni1/\ni2/\n");
+
+    // 8. a script calling itself stops at the depth limit instead of hanging
+    reset_shell();
+    put_file("self.sh", "sh self.sh\n");
+    CHECK_STR(run("sh self.sh"), "sh: self.sh: maximum script depth exceeded\n");
+    // depth counter is back to 0 afterwards, so another script still runs
+    put_file("ok.sh", "mkdir ok\n");
+    CHECK_STR(run("sh ok.sh"), "");
+    CHECK_STR(run("ls ok"), "");
+
+    // 9. error cases
+    reset_shell();
+    put_file("a.sh", "mkdir ran\n");
+    CHECK_STR(run("mkdir d"), "");
+    CHECK_STR(run("sh nope.sh"), "sh: nope.sh: no such file\n");
+    CHECK_STR(run("./nope.sh"), "sh: ./nope.sh: no such file\n");
+    CHECK_STR(run("sh d"), "sh: d: not a file\n");
+    CHECK_STR(run("sh"), "sh: missing operand\n");
+    CHECK_STR(run("sh a.sh | grep x"), "sh: cannot be used in a pipeline\n");
+    CHECK_STR(run("ls | ./a.sh"), "sh: cannot be used in a pipeline\n");
+    CHECK_STR(run("ls | sh a.sh | grep x"), "sh: cannot be used in a pipeline\n");
+    CHECK_STR(run("ls"), "a.sh\nd/\n");
+
+    // line longer than SHELL_LINE_MAX - 1 is reported and skipped, the rest still runs
+    static char long_script[SHELL_LINE_MAX + 64];
+    strcpy(long_script, "mkdir first\nmkdir ");
+    size_t used = strlen(long_script);
+    memset(long_script + used, 'z', SHELL_LINE_MAX);
+    strcpy(long_script + used + SHELL_LINE_MAX, "\nmkdir last\n");
+    put_file("long.sh", long_script);
+    CHECK_STR(run("sh long.sh"), "sh: long.sh: line 2: line too long\n");
+    CHECK_STR(run("ls"), "a.sh\nd/\nlong.sh\nfirst/\nlast/\n");
+
+    // a line of exactly SHELL_LINE_MAX - 1 characters still runs
+    char exact[SHELL_LINE_MAX + 8];
+    memset(exact, ' ', SHELL_LINE_MAX - 1);
+    memcpy(exact + SHELL_LINE_MAX - 1 - 2, "ls", 2);
+    strcpy(exact + SHELL_LINE_MAX - 1, "\n");
+    put_file("exact.sh", exact);
+    CHECK_STR(run("sh exact.sh"), "a.sh\nd/\nlong.sh\nfirst/\nlast/\nexact.sh\n");
+
+    // 10. cat inside a script does not overwrite the rest of the script
+    reset_shell();
+    static char text[2000];
+    memset(text, 'q', sizeof(text) - 1);
+    text[sizeof(text) - 1] = '\0';
+    put_file("q.txt", text);
+    put_file("cat.sh", "cat q.txt\nmkdir after\nls after\ngrep q q.txt | grep zzz\nmkdir end\n");
+    char expected[sizeof(text) + 8];
+    snprintf(expected, sizeof(expected), "%s\n", text);
+    CHECK_STR(run("sh cat.sh"), expected);
+    CHECK_STR(run("ls"), "q.txt\ncat.sh\nafter/\nend/\n");
+}
+
 int main(void) {
     test_parser();
     test_dispatch();
@@ -321,6 +421,7 @@ int main(void) {
     test_large_file();
     test_read_line();
     test_cwd_overflow();
+    test_script();
     printf("%d passed, %d failed\n", passes, fails);
     return fails != 0;
 }
