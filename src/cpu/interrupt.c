@@ -166,7 +166,15 @@ void syscall(struct InterruptFrame frame) {
             cmos_read_time((struct Time *) addr);
             break;
         }
-        case 14: // Reserved for put char at (for time) without gesering text cursor
+        case 14: // put_char_at: ebx = char, ecx = row, edx = col (kursor shell tidak disentuh)
+            if (frame.cpu.general.ecx >= FRAMEBUFFER_ROWS || frame.cpu.general.edx >= FRAMEBUFFER_COLS)
+                break;
+            framebuffer_write(
+                (uint8_t) frame.cpu.general.ecx,
+                (uint8_t) frame.cpu.general.edx,
+                (char) frame.cpu.general.ebx,
+                0xF, 0x0
+            );
             break;
         case 15: // Reserved for heap and other stuff ntar
             break;
