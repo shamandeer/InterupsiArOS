@@ -10,5 +10,8 @@ void cmd_grep(int argc, char **argv, struct ShellIO *io);
 void cmd_cp(int argc, char **argv, struct ShellIO *io);
 void cmd_rm(int argc, char **argv, struct ShellIO *io);
 void cmd_cat(int argc, char **argv, struct ShellIO *io);
+void cmd_exec(int argc, char **argv, struct ShellIO *io);
+void cmd_ps(int argc, char **argv, struct ShellIO *io);
+void cmd_kill(int argc, char **argv, struct ShellIO *io);
 
 #endif

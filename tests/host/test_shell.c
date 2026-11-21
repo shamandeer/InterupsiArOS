@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "header/shell/shell.h"
+#include "header/process/process-info.h"
 
 void fake_disk_reset(void);
 
@@ -29,9 +30,59 @@ static void screen_append(const char *data, size_t len) {
     screen[screen_len] = '\0';
 }
 
+// emulated process table: shell is PID 0 and RUNNING, exec appends READY processes
+static struct ProcessInfo procs[PROCESS_INFO_COUNT_MAX];
+static uint32_t proc_count, next_pid;
+
+static void reset_processes(void) {
+    memset(procs, 0, sizeof(procs));
+    strcpy(procs[0].name, "shell");
+    procs[0].state = PROCESS_INFO_STATE_RUNNING;
+    proc_count = 1;
+    next_pid = 1;
+}
+
+static void emulate_exec(const struct EXT2DriverRequest *request, int32_t *retcode, uint32_t *pid) {
+    if (proc_count == PROCESS_INFO_COUNT_MAX) {
+        *retcode = 1;
+        return;
+    }
+    struct ProcessInfo *p = &procs[proc_count++];
+    memset(p, 0, sizeof(*p));
+    memcpy(p->name, request->name, request->name_len);
+    p->pid = next_pid++;
+    p->state = PROCESS_INFO_STATE_READY;
+    *pid = p->pid;
+    *retcode = 0;
+}
+
+static int8_t emulate_kill(uint32_t pid) {
+    if (pid == 0)
+        return PROCESS_KILL_FORBIDDEN;
+    for (uint32_t i = 0; i < proc_count; i++) {
+        if (procs[i].pid == pid) {
+            memmove(&procs[i], &procs[i + 1], (proc_count - i - 1) * sizeof(procs[0]));
+            proc_count--;
+            return PROCESS_KILL_SUCCESS;
+        }
+    }
+    return PROCESS_KILL_NOT_FOUND;
+}
+
 void syscall(uint32_t eax, uintptr_t ebx, uintptr_t ecx, uintptr_t edx) {
-    (void) edx;
     switch (eax) {
+        case SYS_EXEC:
+            emulate_exec((const struct EXT2DriverRequest *) ebx, (int32_t *) ecx, (uint32_t *) edx);
+            break;
+        case SYS_KILL:
+            *(int8_t *) ecx = emulate_kill((uint32_t) ebx);
+            break;
+        case SYS_PROCESS_INFO: {
+            uint32_t n = proc_count < ecx ? proc_count : (uint32_t) ecx;
+            memcpy((void *) ebx, procs, n * sizeof(procs[0]));
+            *(uint32_t *) edx = n;
+            break;
+        }
         case SYS_FS_READ:
             *(int8_t *) ecx = read(*(struct EXT2DriverRequest *) ebx);
             break;
@@ -411,6 +462,38 @@ static void test_script(void) {
     CHECK_STR(run("ls"), "q.txt\ncat.sh\nafter/\nend/\n");
 }
 
+static void test_process_commands(void) {
+    reset_shell();
+    reset_processes();
+    put_file("clock", "\xEB\xFE");
+    CHECK_STR(run("mkdir bin"), "");
+
+    CHECK_STR(run("exec clock"), "[exec] clock berjalan dengan PID 1\n");
+    CHECK_STR(run("ps"),
+        "PID    NAME             STATE\n"
+        "0      shell            RUNNING\n"
+        "1      clock            READY\n");
+    CHECK_STR(run("ps | grep clock"), "1      clock            READY\n");
+    CHECK_STR(run("kill 1"), "[kill] PID 1 dihentikan\n");
+    CHECK_STR(run("ps"), "PID    NAME             STATE\n0      shell            RUNNING\n");
+    CHECK_STR(run("kill 1"), "[kill] PID 1 tidak ditemukan\n");
+    CHECK_STR(run("kill 0"), "[kill] tidak bisa menghentikan init process\n");
+    CHECK_STR(run("kill 1x"), "[kill] PID '1x' tidak valid\n");
+    CHECK_STR(run("kill 4294967296"), "[kill] PID '4294967296' tidak valid\n");
+    CHECK_STR(run("kill"), "[kill] usage: kill <pid>\n");
+    CHECK_STR(run("ps x"), "[ps] usage: ps\n");
+
+    CHECK_STR(run("exec tidakada"), "[exec] file 'tidakada' tidak ditemukan\n");
+    CHECK_STR(run("exec bin"), "[exec] file 'bin' tidak ditemukan\n");
+    CHECK_STR(run("exec"), "[exec] usage: exec <path>\n");
+    CHECK_STR(run("cd bin"), "");
+    CHECK_STR(run("exec ../clock"), "[exec] clock berjalan dengan PID 2\n");
+
+    for (int i = 2; i < PROCESS_INFO_COUNT_MAX; i++)
+        run("exec /clock");
+    CHECK_STR(run("exec /clock"), "[exec] gagal: jumlah process sudah maksimum\n");
+}
+
 int main(void) {
     test_parser();
     test_dispatch();
@@ -422,6 +505,7 @@ int main(void) {
     test_read_line();
     test_cwd_overflow();
     test_script();
+    test_process_commands();
     printf("%d passed, %d failed\n", passes, fails);
     return fails != 0;
 }

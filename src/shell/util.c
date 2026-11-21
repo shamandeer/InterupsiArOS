@@ -58,3 +58,15 @@ void shell_io_puts(struct ShellIO *io, const char *s) {
 void shell_io_putc(struct ShellIO *io, char c) {
     shell_io_write(io, &c, 1);
 }
+
+// writes value in decimal, returns the digit count
+uint32_t shell_io_putu(struct ShellIO *io, uint32_t value) {
+    char digits[10];
+    uint32_t len = 0;
+    do {
+        digits[sizeof(digits) - 1 - len++] = (char) ('0' + value % 10);
+        value /= 10;
+    } while (value > 0);
+    shell_io_write(io, digits + sizeof(digits) - len, len);
+    return len;
+}
