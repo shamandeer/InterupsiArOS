@@ -153,7 +153,7 @@ insert-spinner: inserter user-spinner
 	@cd $(OUTPUT_FOLDER); ./inserter spinner 2 $(DISK_NAME).bin
 
 insert-all: inserter user-programs
-	@echo Inserting shell, hello and clock into root directory...
+	@echo Inserting shell, hello, clock and spinner into root directory...
 	@cd $(OUTPUT_FOLDER) && ./inserter -f shell 2 $(DISK_NAME).bin
 	@cd $(OUTPUT_FOLDER) && ./inserter -f hello 2 $(DISK_NAME).bin
 	@cd $(OUTPUT_FOLDER) && ./inserter -f clock 2 $(DISK_NAME).bin
