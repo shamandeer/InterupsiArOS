@@ -29,13 +29,20 @@ LFLAGS        = -T $(SOURCE_FOLDER)/linker.ld -melf_i386
 IFLAGS        = -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -input-charset utf8 -quiet -boot-info-table
 
 run: all
-	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -drive file=$(OUTPUT_FOLDER)/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -rtc base=localtime \
+		-drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
+		-cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 all: build
 build: iso
 clean:
-	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user $(OUTPUT_FOLDER)/inserter
+	rm -rf $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/inserter
+	rm -rf $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(OUTPUT_FOLDER)/user
+	rm -rf $(OUTPUT_FOLDER)/hello $(OUTPUT_FOLDER)/hello_elf $(HELLO_OBJECT_DIR)
+	rm -rf $(OUTPUT_FOLDER)/clock $(OUTPUT_FOLDER)/clock_elf $(CLOCK_OBJECT_DIR)
+	rm -rf $(OUTPUT_FOLDER)/spinner $(OUTPUT_FOLDER)/spinner_elf $(SPINNER_OBJECT_DIR)
 
 disk:
+	@mkdir -p $(OUTPUT_FOLDER)
 	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 8M
 
 HOST_CC       = cc
@@ -67,6 +74,15 @@ SHELL_SOURCES = $(wildcard $(SOURCE_FOLDER)/shell/*.c) $(SOURCE_FOLDER)/user-she
 SHELL_OBJECTS = $(patsubst $(SOURCE_FOLDER)/%.c,$(OUTPUT_FOLDER)/user/%.o,$(SHELL_SOURCES))
 USER_CRT0     = $(OUTPUT_FOLDER)/user/crt0.o
 USER_LFLAGS   = -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386
+HELLO_OBJECT_DIR = $(OUTPUT_FOLDER)/user-hello
+HELLO_OBJECTS    = $(addprefix $(HELLO_OBJECT_DIR)/,crt0.o hello.o syscall.o)
+CLOCK_OBJECT_DIR = $(OUTPUT_FOLDER)/user-clock
+CLOCK_OBJECTS    = $(addprefix $(CLOCK_OBJECT_DIR)/,crt0.o clock.o)
+SPINNER_OBJECT_DIR = $(OUTPUT_FOLDER)/user-spinner
+SPINNER_OBJECTS    = $(addprefix $(SPINNER_OBJECT_DIR)/,crt0.o spinner.o)
+
+.PHONY: user-shell user-hello user-clock user-spinner user-programs
+.PHONY: inserter insert-shell insert-hello insert-clock insert-spinner insert-all
 
 $(USER_CRT0): $(SOURCE_FOLDER)/crt0.s
 	@mkdir -p $(dir $@)
@@ -82,6 +98,36 @@ user-shell: $(USER_CRT0) $(SHELL_OBJECTS)
 	@rm -rf $(OUTPUT_FOLDER)/user
 	@echo Linking user shell, generate flat binary and shell_elf...
 
+user-hello:
+	@mkdir -p $(HELLO_OBJECT_DIR)
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(HELLO_OBJECT_DIR)/crt0.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/hello.c -o $(HELLO_OBJECT_DIR)/hello.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/shell/syscall.c -o $(HELLO_OBJECT_DIR)/syscall.o
+	@$(LIN) $(USER_LFLAGS) --oformat=binary $(HELLO_OBJECTS) -o $(OUTPUT_FOLDER)/hello
+	@$(LIN) $(USER_LFLAGS) --oformat=elf32-i386 $(HELLO_OBJECTS) -o $(OUTPUT_FOLDER)/hello_elf
+	@size --target=binary $(OUTPUT_FOLDER)/hello
+	@rm -rf $(HELLO_OBJECT_DIR)
+
+user-clock:
+	@mkdir -p $(CLOCK_OBJECT_DIR)
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(CLOCK_OBJECT_DIR)/crt0.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/clock.c -o $(CLOCK_OBJECT_DIR)/clock.o
+	@$(LIN) $(USER_LFLAGS) --oformat=binary $(CLOCK_OBJECTS) -o $(OUTPUT_FOLDER)/clock
+	@$(LIN) $(USER_LFLAGS) --oformat=elf32-i386 $(CLOCK_OBJECTS) -o $(OUTPUT_FOLDER)/clock_elf
+	@size --target=binary $(OUTPUT_FOLDER)/clock
+	@rm -rf $(CLOCK_OBJECT_DIR)
+
+user-spinner:
+	@mkdir -p $(SPINNER_OBJECT_DIR)
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(SPINNER_OBJECT_DIR)/crt0.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/spinner.c -o $(SPINNER_OBJECT_DIR)/spinner.o
+	@$(LIN) $(USER_LFLAGS) --oformat=binary $(SPINNER_OBJECTS) -o $(OUTPUT_FOLDER)/spinner
+	@$(LIN) $(USER_LFLAGS) --oformat=elf32-i386 $(SPINNER_OBJECTS) -o $(OUTPUT_FOLDER)/spinner_elf
+	@size --target=binary $(OUTPUT_FOLDER)/spinner
+	@rm -rf $(SPINNER_OBJECT_DIR)
+
+user-programs: user-shell user-hello user-clock user-spinner
+
 inserter:
 	@mkdir -p $(OUTPUT_FOLDER)
 	@$(CC) -Wno-builtin-declaration-mismatch -g -I$(SOURCE_FOLDER) \
@@ -93,6 +139,25 @@ inserter:
 insert-shell: inserter user-shell
 	@echo Inserting shell into root directory...
 	@cd $(OUTPUT_FOLDER); ./inserter -f shell 2 $(DISK_NAME).bin
+
+insert-hello: inserter user-hello
+	@echo Inserting hello into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter -f hello 2 $(DISK_NAME).bin
+
+insert-clock: inserter user-clock
+	@echo Inserting clock into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter clock 2 $(DISK_NAME).bin
+
+insert-spinner: inserter user-spinner
+	@echo Inserting spinner into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter spinner 2 $(DISK_NAME).bin
+
+insert-all: inserter user-programs
+	@echo Inserting shell, hello, clock and spinner into root directory...
+	@cd $(OUTPUT_FOLDER) && ./inserter -f shell 2 $(DISK_NAME).bin
+	@cd $(OUTPUT_FOLDER) && ./inserter -f hello 2 $(DISK_NAME).bin
+	@cd $(OUTPUT_FOLDER) && ./inserter -f clock 2 $(DISK_NAME).bin
+	@cd $(OUTPUT_FOLDER) && ./inserter -f spinner 2 $(DISK_NAME).bin
 
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -107,6 +172,7 @@ kernel:
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/text/framebuffer.c -o $(OUTPUT_FOLDER)/framebuffer.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/keyboard.c -o $(OUTPUT_FOLDER)/keyboard.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/disk.c -o $(OUTPUT_FOLDER)/disk.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/cmos.c -o $(OUTPUT_FOLDER)/cmos.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/filesystem/ext2.c -o $(OUTPUT_FOLDER)/ext2.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/paging.c -o $(OUTPUT_FOLDER)/paging.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/swap.c -o $(OUTPUT_FOLDER)/swap.o

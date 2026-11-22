@@ -2,6 +2,7 @@
 #include "header/cpu/gdt.h"
 #include "header/cpu/portio.h"
 #include "header/driver/keyboard.h"
+#include "header/driver/cmos.h"
 #include "header/memory/swap.h"
 #include "header/text/framebuffer.h"
 #include "header/filesystem/ext2.h"
@@ -246,9 +247,25 @@ void syscall(struct InterruptFrame frame) {
         case 12: // kill
             syscall_kill(frame.cpu.general.ebx, (int8_t *) frame.cpu.general.ecx);
             break;
-        case 13: // Reserved for get time
+        case 13: { // get_time: ebx = pointer to struct Time in user space
+            uint32_t addr = frame.cpu.general.ebx;
+            // Tolak NULL, overflow, dan rentang yang menyentuh kernel (>= 0xC0000000)
+            if (addr == 0 ||
+                addr > 0xFFFFFFFFU - sizeof(struct Time) ||
+                addr + sizeof(struct Time) > 0xC0000000U)
+                break;
+            cmos_read_time((struct Time *) addr);
             break;
-        case 14: // Reserved for put char at (for time) without gesering text cursor
+        }
+        case 14: // put_char_at: ebx = char, ecx = row, edx = col (kursor shell tidak disentuh)
+            if (frame.cpu.general.ecx >= FRAMEBUFFER_ROWS || frame.cpu.general.edx >= FRAMEBUFFER_COLS)
+                break;
+            framebuffer_write(
+                (uint8_t) frame.cpu.general.ecx,
+                (uint8_t) frame.cpu.general.edx,
+                (char) frame.cpu.general.ebx,
+                0xF, 0x0
+            );
             break;
         case 15: // Reserved for heap and other stuff ntar
             break;
