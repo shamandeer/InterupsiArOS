@@ -2,6 +2,8 @@
 #include "header/shell/commands.h"
 #include "header/stdlib/string.h"
 
+static struct ShellHistory history;
+
 struct ShellCommand {
     const char *name;
     command_fn run;
@@ -80,11 +82,24 @@ void shell_print_prompt(void) {
 
 void shell_read_line(char *line, uint32_t cap) {
     uint32_t len = 0;
+    history.pos = history.count;
+    history.is_draft = true;
     while (true) {
         char c = 0;
         syscall(SYS_GETCHAR, (uintptr_t) &c, 0, 0);
+
+        if ((uint8_t)c == 0x80) {
+            navigate_up(&history, line, &len);
+            continue;
+        }
+        if ((uint8_t)c == 0x81) {
+            navigate_down(&history, line, &len);
+            continue;
+
+        }
         if (c == '\n')
             break;
+
         if (c == '\b') {
             if (len > 0) {
                 len--;
@@ -97,6 +112,17 @@ void shell_read_line(char *line, uint32_t cap) {
     }
     shell_putchar('\n', SHELL_COLOR_DEFAULT);
     line[len] = '\0';
+    shell_history_add(&history, line, &len);
+}
+
+void shell_replace_line(char* dst_line, uint32_t *len, const char* src_line) {
+    for (uint32_t i = 0; i < *len; i++) {
+        shell_puts("\b \b", SHELL_COLOR_DEFAULT);
+    }
+    *len = shell_strlen(src_line);
+    memcpy(dst_line, src_line, *len);
+    dst_line[*len] = '\0';
+    shell_puts(dst_line, SHELL_COLOR_DEFAULT);
 }
 
 static command_fn find_command(const char *name) {
@@ -181,7 +207,6 @@ void shell_execute_line(char *line) {
 
 void shell_run(void) {
     char line[SHELL_LINE_MAX];
-
     syscall(SYS_KEYBOARD_ACTIVATE, 0, 0, 0);
     while (true) {
         shell_print_prompt();

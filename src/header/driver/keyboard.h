@@ -13,6 +13,8 @@
 
 #define KEYBOARD_DATA_PORT     0x60
 #define EXTENDED_SCANCODE_BYTE 0xE0
+#define KEYBOARD_UP_BYTE 0x80
+#define KEYBOARD_DOWN_BYTE 0x81
 
 /**
  * keyboard_scancode_1_to_ascii_map[256], Convert scancode values that correspond to ASCII printables

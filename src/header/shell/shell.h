@@ -13,6 +13,8 @@
 #define SHELL_PIPE_BUF_SIZE  0x10000
 #define SHELL_FILE_BUF_SIZE  0x10000
 #define SHELL_DIR_BUF_SIZE   (DIRECT_BLOCKS * BLOCK_SIZE)
+#define SHELL_HISTORY_MAX 8
+#define SHELL_LINE_HISTORY_MAX (SHELL_LINE_MAX)
 
 #define SHELL_COLOR_DEFAULT  0xF
 #define SHELL_COLOR_ERROR    0xC
@@ -70,6 +72,15 @@ struct ShellPath {
     uint8_t name_len;
 };
 
+struct ShellHistory {
+    char history[SHELL_HISTORY_MAX][SHELL_LINE_HISTORY_MAX];
+    char draft[SHELL_LINE_HISTORY_MAX];
+    uint32_t count;
+    uint32_t next;
+    uint32_t pos;
+    bool is_draft;
+};
+
 extern char shell_file_buf[SHELL_FILE_BUF_SIZE];
 
 
@@ -116,6 +127,7 @@ uint32_t shell_cwd_inode(void);
 bool shell_set_cwd(uint32_t inode, const char *name);
 void shell_print_prompt(void);
 void shell_read_line(char *line, uint32_t cap);
+void shell_replace_line(char* dst_line, uint32_t *len, const char* src_line);
 void shell_execute_line(char *line);
 void shell_run(void);
 
@@ -129,5 +141,13 @@ void shell_run(void);
 void shell_run_script(const char *path);
 
 /* cmd_cat.c */
+
+/* history.c */
+
+// adds line to history
+void shell_history_add(struct ShellHistory *h, const char* line, uint32_t *len);
+
+void navigate_up(struct ShellHistory *h, char *line, uint32_t *len);
+void navigate_down(struct ShellHistory *h, char *line, uint32_t *len);
 
 #endif

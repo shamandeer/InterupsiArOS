@@ -61,20 +61,38 @@ void get_keyboard_buffer(char *buf) {
 
 void keyboard_isr(void) {
     uint8_t scancode = in(KEYBOARD_DATA_PORT);
-
-    if (scancode == 0x2a) {
-        keyboard_state.shift_mode = true;
-    }
+    if (keyboard_state.keyboard_input_on) {
+        if (scancode == EXTENDED_SCANCODE_BYTE) {
+            keyboard_state.read_extended_mode = true;
+            pic_ack(IRQ_KEYBOARD);
+            return;
+        }
     
-    if (scancode == (0x2a + 0x80)) {
-        keyboard_state.shift_mode = false;
+        if (keyboard_state.read_extended_mode && !(scancode & 0x80)) {
+            keyboard_state.read_extended_mode = false;
+            if (scancode == EXT_SCANCODE_UP) {
+                keyboard_state.keyboard_buffer = KEYBOARD_UP_BYTE;
+            }
+            else if (scancode == EXT_SCANCODE_DOWN) {
+                keyboard_state.keyboard_buffer = KEYBOARD_DOWN_BYTE;
+            }
+            pic_ack(IRQ_KEYBOARD);
+            return;
+        }
+    
+        if (scancode == 0x2a) {
+            keyboard_state.shift_mode = true;
+        }
+        
+        if (scancode == (0x2a + 0x80)) {
+            keyboard_state.shift_mode = false;
+        }
+    
+        if (scancode < 0x80 && scancode != 0x2a) {
+            char mapped_char = keyboard_state.shift_mode ? alt_keyboard_scancode_1_to_ascii_map[scancode] : keyboard_scancode_1_to_ascii_map[scancode];
+            if (mapped_char != 0)
+                keyboard_state.keyboard_buffer = mapped_char;
+        }
     }
-
-    if (keyboard_state.keyboard_input_on && scancode < 0x80 && scancode != 0x2a) {
-        char mapped_char = keyboard_state.shift_mode ? alt_keyboard_scancode_1_to_ascii_map[scancode] : keyboard_scancode_1_to_ascii_map[scancode];
-        if (mapped_char != 0)
-            keyboard_state.keyboard_buffer = mapped_char;
-    }
-
     pic_ack(IRQ_KEYBOARD);
 }
