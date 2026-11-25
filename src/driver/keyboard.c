@@ -90,22 +90,15 @@ static void keyboard_handle_byte(uint8_t scancode) {
             return;
 
         switch (code) {
-            case EXT_SCANCODE_UP:        keyboard_enqueue(KEYBOARD_EVENT_UP);        break;
-            case EXT_SCANCODE_DOWN:      keyboard_enqueue(KEYBOARD_EVENT_DOWN);      break;
-            case EXT_SCANCODE_LEFT:      keyboard_enqueue(KEYBOARD_EVENT_LEFT);      break;
-            case EXT_SCANCODE_RIGHT:     keyboard_enqueue(KEYBOARD_EVENT_RIGHT);     break;
-            case EXT_SCANCODE_HOME:      keyboard_enqueue(KEYBOARD_EVENT_HOME);      break;
-            case EXT_SCANCODE_END:       keyboard_enqueue(KEYBOARD_EVENT_END);       break;
-            case EXT_SCANCODE_DELETE:    keyboard_enqueue(KEYBOARD_EVENT_DELETE);    break;
-            case EXT_SCANCODE_PAGE_UP:   keyboard_enqueue(KEYBOARD_EVENT_PAGE_UP);   break;
-            case EXT_SCANCODE_PAGE_DOWN: keyboard_enqueue(KEYBOARD_EVENT_PAGE_DOWN); break;
+            case EXT_SCANCODE_UP:   keyboard_enqueue(KEYBOARD_EVENT_UP);   break;
+            case EXT_SCANCODE_DOWN: keyboard_enqueue(KEYBOARD_EVENT_DOWN); break;
             default: break;
         }
         return;
     }
 
-    // Shift kiri (0x2A) dan shift kanan (0x36).
-    if (code == 0x2A || code == 0x36) {
+    // Hanya shift kiri (make 0x2A, release 0xAA).
+    if (code == 0x2A) {
         keyboard_state.shift_mode = !release;
         return;
     }

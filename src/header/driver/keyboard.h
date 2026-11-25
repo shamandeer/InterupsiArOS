@@ -7,27 +7,12 @@
 
 #define EXT_SCANCODE_UP        0x48
 #define EXT_SCANCODE_DOWN      0x50
-#define EXT_SCANCODE_LEFT      0x4B
-#define EXT_SCANCODE_RIGHT     0x4D
-#define EXT_SCANCODE_HOME      0x47
-#define EXT_SCANCODE_END       0x4F
-#define EXT_SCANCODE_DELETE    0x53
-#define EXT_SCANCODE_PAGE_UP   0x49
-#define EXT_SCANCODE_PAGE_DOWN 0x51
 
-#define KEYBOARD_DATA_PORT     0x60
 #define EXTENDED_SCANCODE_BYTE 0xE0
 
 // Event keyboard berada di luar rentang ASCII printable (0x20..0x7E).
 #define KEYBOARD_EVENT_UP        0x80
 #define KEYBOARD_EVENT_DOWN      0x81
-#define KEYBOARD_EVENT_LEFT      0x82
-#define KEYBOARD_EVENT_RIGHT     0x83
-#define KEYBOARD_EVENT_HOME      0x84
-#define KEYBOARD_EVENT_END       0x85
-#define KEYBOARD_EVENT_DELETE    0x86
-#define KEYBOARD_EVENT_PAGE_UP   0x87
-#define KEYBOARD_EVENT_PAGE_DOWN 0x88
 
 // Nama lama yang sudah dipakai shell/history.
 #define KEYBOARD_UP_BYTE   KEYBOARD_EVENT_UP
