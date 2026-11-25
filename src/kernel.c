@@ -6,6 +6,8 @@
 #include "header/kernel-entrypoint.h"
 #include "header/text/framebuffer.h"
 #include "header/driver/keyboard.h"
+#include "header/driver/mouse.h"
+#include "header/driver/ps2.h"
 #include "header/filesystem/ext2.h"
 #include "header/memory/paging.h"
 #include "header/memory/swap.h"
@@ -22,10 +24,23 @@ void kernel_setup(void) {
     load_gdt(&_gdt_gdtr);
     pic_remap();
     initialize_idt();
-    activate_keyboard_interrupt();
 
     framebuffer_clear();
     framebuffer_set_cursor(0, 0);
+
+    if (!ps2_controller_init())
+        kernel_halt_with_error("Error: failed to initialize PS/2 controller");
+    keyboard_init();
+
+    // Mouse tidak wajib ada; kalau tidak terdeteksi, OS tetap jalan tanpa kursor.
+    bool mouse_ready = mouse_init();
+
+    ps2_enable_keyboard_irq();
+    if (mouse_ready) {
+        ps2_enable_mouse_irq();
+        mouse_cursor_init();
+    }
+
     initialize_filesystem_ext2();
     swap_init();
 

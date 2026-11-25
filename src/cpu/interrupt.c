@@ -2,6 +2,8 @@
 #include "header/cpu/gdt.h"
 #include "header/cpu/portio.h"
 #include "header/driver/keyboard.h"
+#include "header/driver/mouse.h"
+#include "header/driver/ps2.h"
 #include "header/driver/cmos.h"
 #include "header/driver/speaker.h"
 #include "header/memory/swap.h"
@@ -65,6 +67,9 @@ static uint8_t cursor_row = 0;
 static uint8_t cursor_col = 0;
 
 static void kernel_scroll_up(void) {
+    // Simpan isi sel di bawah kursor sebelum layar digeser.
+    mouse_cursor_hide();
+
     memmove(
         FRAMEBUFFER_MEMORY_OFFSET,
         FRAMEBUFFER_MEMORY_OFFSET + FRAMEBUFFER_COLS * 2,
@@ -72,6 +77,8 @@ static void kernel_scroll_up(void) {
     );
     for (uint8_t col = 0; col < FRAMEBUFFER_COLS; col++)
         framebuffer_write(FRAMEBUFFER_ROWS - 1, col, ' ', 0x07, 0x00);
+
+    mouse_cursor_show();
 }
 
 static void kernel_putchar_at_cursor(char c, uint8_t color) {
@@ -215,7 +222,7 @@ void syscall(struct InterruptFrame frame) {
             *((int8_t *) frame.cpu.general.ecx) = delete(*(struct EXT2DriverRequest *) frame.cpu.general.ebx);
             break;
         case 4:
-            get_keyboard_buffer((char *) frame.cpu.general.ebx);
+            get_keyboard_buffer((uint8_t *) frame.cpu.general.ebx);
             break;
         case 5:
             kernel_putchar_at_cursor((char) frame.cpu.general.ebx, (uint8_t) frame.cpu.general.ecx);
@@ -304,7 +311,12 @@ void syscall(struct InterruptFrame frame) {
 void main_interrupt_handler(struct InterruptFrame frame) {
     switch (frame.int_number) {
         case PIC1_OFFSET + IRQ_KEYBOARD:
-            keyboard_isr();
+            ps2_handle_irq();
+            pic_ack(IRQ_KEYBOARD);
+            break;
+        case PIC2_OFFSET + (IRQ_MOUSE - 8):
+            ps2_handle_irq();
+            pic_ack(IRQ_MOUSE);
             break;
         case 0x30:
             syscall(frame);
@@ -316,6 +328,10 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             break;
         }
         case PIC1_OFFSET + IRQ_TIMER: {
+            // Polling mouse di sini menjaga kursor tetap bergerak tanpa
+            // menambah syscall atau thread khusus.
+            mouse_poll();
+
             timer_ticks++;
             speaker_update(timer_ticks);
             // intsetup.s sudah menaruh esp user di cpu.stack.esp untuk interrupt dari ring 3

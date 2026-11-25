@@ -1,5 +1,6 @@
 #include "header/shell/shell.h"
 #include "header/shell/commands.h"
+#include "header/driver/keyboard.h"
 #include "header/stdlib/string.h"
 
 static struct ShellHistory history;
@@ -88,25 +89,26 @@ void shell_read_line(char *line, uint32_t cap) {
     history.pos = history.count;
     history.is_draft = true;
     while (true) {
-        char c = 0;
-        syscall(SYS_GETCHAR, (uintptr_t) &c, 0, 0);
+        uint8_t key = 0;
+        syscall(SYS_GETCHAR, (uintptr_t) &key, 0, 0);
 
-        if (c == '\t') {
+        if (key == '\t') {
             shell_complete(line, &len, cap, last_was_tab);
             last_was_tab = true;
             continue;
         }
         last_was_tab = false;
 
-        if ((uint8_t)c == 0x80) {
+        if (key == KEYBOARD_UP_BYTE) {
             navigate_up(&history, line, &len);
             continue;
         }
-        if ((uint8_t)c == 0x81) {
+        if (key == KEYBOARD_DOWN_BYTE) {
             navigate_down(&history, line, &len);
             continue;
-
         }
+
+        char c = (char) key;
         if (c == '\n')
             break;
 
