@@ -32,6 +32,14 @@ run: all
 	@qemu-system-i386 -s -S -m $(QEMU_MEM)M -rtc base=localtime \
 		-drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
 		-cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+# run tanpa menunggu gdb, PC Speaker diarahkan ke backend audio host
+# (pa = PulseAudio Linux/WSLg, dsound = Windows, coreaudio = macOS)
+QEMU_AUDIO_DRIVER ?= pa
+run-audio: all
+	@qemu-system-i386 -m $(QEMU_MEM)M -rtc base=localtime \
+		-audiodev $(QEMU_AUDIO_DRIVER),id=snd0 -machine pcspk-audiodev=snd0 \
+		-drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
+		-cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 all: build
 build: iso
 clean:
@@ -40,6 +48,7 @@ clean:
 	rm -rf $(OUTPUT_FOLDER)/hello $(OUTPUT_FOLDER)/hello_elf $(HELLO_OBJECT_DIR)
 	rm -rf $(OUTPUT_FOLDER)/clock $(OUTPUT_FOLDER)/clock_elf $(CLOCK_OBJECT_DIR)
 	rm -rf $(OUTPUT_FOLDER)/spinner $(OUTPUT_FOLDER)/spinner_elf $(SPINNER_OBJECT_DIR)
+	rm -rf $(OUTPUT_FOLDER)/music $(OUTPUT_FOLDER)/music_elf $(MUSIC_OBJECT_DIR)
 
 disk:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -80,9 +89,11 @@ CLOCK_OBJECT_DIR = $(OUTPUT_FOLDER)/user-clock
 CLOCK_OBJECTS    = $(addprefix $(CLOCK_OBJECT_DIR)/,crt0.o clock.o)
 SPINNER_OBJECT_DIR = $(OUTPUT_FOLDER)/user-spinner
 SPINNER_OBJECTS    = $(addprefix $(SPINNER_OBJECT_DIR)/,crt0.o spinner.o)
+MUSIC_OBJECT_DIR = $(OUTPUT_FOLDER)/user-music
+MUSIC_OBJECTS    = $(addprefix $(MUSIC_OBJECT_DIR)/,crt0.o music.o)
 
-.PHONY: user-shell user-hello user-clock user-spinner user-programs
-.PHONY: inserter insert-shell insert-hello insert-clock insert-spinner insert-all
+.PHONY: user-shell user-hello user-clock user-spinner user-music user-programs run-audio
+.PHONY: inserter insert-shell insert-hello insert-clock insert-spinner insert-music insert-all
 
 $(USER_CRT0): $(SOURCE_FOLDER)/crt0.s
 	@mkdir -p $(dir $@)
@@ -126,7 +137,16 @@ user-spinner:
 	@size --target=binary $(OUTPUT_FOLDER)/spinner
 	@rm -rf $(SPINNER_OBJECT_DIR)
 
-user-programs: user-shell user-hello user-clock user-spinner
+user-music:
+	@mkdir -p $(MUSIC_OBJECT_DIR)
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(MUSIC_OBJECT_DIR)/crt0.o
+	@$(CC) $(CFLAGS) -fno-pie -fno-asynchronous-unwind-tables $(SOURCE_FOLDER)/music.c -o $(MUSIC_OBJECT_DIR)/music.o
+	@$(LIN) $(USER_LFLAGS) --oformat=binary $(MUSIC_OBJECTS) -o $(OUTPUT_FOLDER)/music
+	@$(LIN) $(USER_LFLAGS) --oformat=elf32-i386 $(MUSIC_OBJECTS) -o $(OUTPUT_FOLDER)/music_elf
+	@size --target=binary $(OUTPUT_FOLDER)/music
+	@rm -rf $(MUSIC_OBJECT_DIR)
+
+user-programs: user-shell user-hello user-clock user-spinner user-music
 
 inserter:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -152,12 +172,17 @@ insert-spinner: inserter user-spinner
 	@echo Inserting spinner into root directory...
 	@cd $(OUTPUT_FOLDER); ./inserter spinner 2 $(DISK_NAME).bin
 
+insert-music: inserter user-music
+	@echo Inserting music into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter -f music 2 $(DISK_NAME).bin
+
 insert-all: inserter user-programs
-	@echo Inserting shell, hello, clock and spinner into root directory...
+	@echo Inserting shell, hello, clock, spinner and music into root directory...
 	@cd $(OUTPUT_FOLDER) && ./inserter -f shell 2 $(DISK_NAME).bin
 	@cd $(OUTPUT_FOLDER) && ./inserter -f hello 2 $(DISK_NAME).bin
 	@cd $(OUTPUT_FOLDER) && ./inserter -f clock 2 $(DISK_NAME).bin
 	@cd $(OUTPUT_FOLDER) && ./inserter -f spinner 2 $(DISK_NAME).bin
+	@cd $(OUTPUT_FOLDER) && ./inserter -f music 2 $(DISK_NAME).bin
 
 kernel:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -173,6 +198,7 @@ kernel:
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/keyboard.c -o $(OUTPUT_FOLDER)/keyboard.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/disk.c -o $(OUTPUT_FOLDER)/disk.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/cmos.c -o $(OUTPUT_FOLDER)/cmos.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/driver/speaker.c -o $(OUTPUT_FOLDER)/speaker.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/filesystem/ext2.c -o $(OUTPUT_FOLDER)/ext2.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/paging.c -o $(OUTPUT_FOLDER)/paging.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/swap.c -o $(OUTPUT_FOLDER)/swap.o

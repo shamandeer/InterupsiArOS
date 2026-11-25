@@ -3,12 +3,16 @@
 #include "header/cpu/portio.h"
 #include "header/driver/keyboard.h"
 #include "header/driver/cmos.h"
+#include "header/driver/speaker.h"
 #include "header/memory/swap.h"
 #include "header/text/framebuffer.h"
 #include "header/filesystem/ext2.h"
 #include "header/stdlib/string.h"
 #include "header/process/scheduler.h"
 #include "header/process/process-info.h"
+
+// Jumlah IRQ0 sejak boot, PIT_TIMER_FREQUENCY 1000 Hz jadi 1 tick = 1 ms
+static volatile uint32_t timer_ticks = 0;
 
 struct TSSEntry _interrupt_tss_entry = {
     .ss0 = GDT_KERNEL_DATA_SEGMENT_SELECTOR,
@@ -284,6 +288,16 @@ void syscall(struct InterruptFrame frame) {
             *retcode = move(*src, *dst);
             break;
         }
+        case 18: // beep: ebx = frekuensi Hz (0 = stop), ecx = durasi ms, non-blocking
+            speaker_beep(frame.cpu.general.ebx, frame.cpu.general.ecx, timer_ticks);
+            break;
+        case 19: { // get_ticks: ebx = uint32_t* tujuan, ms sejak timer aktif
+            uint32_t *ticks = (uint32_t *) frame.cpu.general.ebx;
+            if (!is_user_buffer(ticks, sizeof(*ticks)))
+                break;
+            *ticks = timer_ticks;
+            break;
+        }
     }
 }
 
@@ -302,6 +316,8 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             break;
         }
         case PIC1_OFFSET + IRQ_TIMER: {
+            timer_ticks++;
+            speaker_update(timer_ticks);
             // intsetup.s sudah menaruh esp user di cpu.stack.esp untuk interrupt dari ring 3
             struct Context context = {
                 .cpu = frame.cpu,
