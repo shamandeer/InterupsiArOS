@@ -33,8 +33,21 @@ struct Note {
 #define C4_LONG { "C4", 262, 2 }
 #define D4_LONG { "D4", 294, 2 }
 #define C5_LONG { "C5", 523, 2 }
+#define A4_LONG   { "A4",  440, 2 }
+#define B4_LONG   { "B4",  494, 2 }
+#define CS5       { "C#5", 554, 1 }
+#define CS5_LONG  { "C#5", 554, 2 }
+#define D5        { "D5",  587, 1 }
+#define D5_LONG   { "D5",  587, 2 }
+#define D5_HOLD   { "D5",  587, 4 }
+#define E5        { "E5",  659, 1 }
+#define E5_LONG   { "E5",  659, 2 }
+#define E5_HOLD   { "E5",  659, 4 }
+#define FS5       { "F#5", 740, 1 }
+#define FS5_LONG  { "F#5", 740, 2 }
+#define A5        { "A5",  880, 1 }
+#define A5_LONG   { "A5",  880, 2 }
 
-// Tangga nada do-re-mi lalu "Twinkle Twinkle Little Star" (public domain)
 static const struct Note song[] = {
     C4, D4, E4, F4, G4, A4, B4, C5_LONG,
     C4, C4, G4, G4, A4, A4, G4_LONG,
@@ -44,6 +57,15 @@ static const struct Note song[] = {
     C4, C4, G4, G4, A4, A4, G4_LONG,
     F4, F4, E4, E4, D4, D4, C4_LONG,
 };
+
+/* static const struct Note song[] = {
+    A4, B4, D5, B4, FS5, FS5, E5_LONG,
+    A4, B4, D5, B4, E5, E5, D5, CS5, B4_LONG,
+    A4, B4, D5, B4, D5, E5, CS5, A4, A4, E5, D5_LONG,
+    A4, B4, D5, B4, FS5, FS5, E5_LONG,
+    A4, B4, D5, B4, A5, CS5, D5, CS5, B4_LONG,
+    A4, B4, D5, B4, D5, E5, CS5, A4, A4, E5, D5_LONG,
+}; */
 
 static void syscall(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx) {
     __asm__ volatile(
@@ -75,7 +97,7 @@ static void show_status(const char *text) {
         syscall(SYS_PUT_CHAR_AT, (uint32_t) ' ', STATUS_ROW, STATUS_COL + i);
 }
 
-static void show_note(const struct Note *note) {
+static void show_note(const struct Note *note) { 
     char text[STATUS_LEN + 1] = "Music: ";
     uint32_t len = 7;
     text[len++] = note->name[0];
