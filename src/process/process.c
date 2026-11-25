@@ -8,9 +8,11 @@ struct ProcessControlBlock _process_list[PROCESS_COUNT_MAX] = {0};
 static struct {
     uint32_t active_process_count;
     uint32_t last_pid;
+    uint32_t next_start_seq;
 } process_manager_state = {
     .active_process_count = 0,
     .last_pid             = 0,
+    .next_start_seq       = 1,
 };
 
 static uint32_t ceil_div(uint32_t numerator, uint32_t denominator) {
@@ -39,6 +41,54 @@ static int32_t process_list_get_index_by_pid(uint32_t pid) {
         }
     }
     return -1;
+}
+
+// Instance lama dari executable yang sama tidak dijalankan bersamaan.
+// Yang sedang RUNNING ditandai pending agar context-nya sempat disimpan.
+static void process_suspend_older_instances(uint32_t program_inode, uint32_t new_pid) {
+    for (uint32_t i = 0; i < PROCESS_COUNT_MAX; i++) {
+        struct ProcessControlBlock *pcb = &_process_list[i];
+        if (!pcb->metadata.active || pcb->metadata.pid == new_pid)
+            continue;
+        if (pcb->metadata.program_inode != program_inode)
+            continue;
+
+        if (pcb->metadata.state == READY) {
+            pcb->metadata.state = WAITING;
+            pcb->metadata.suspended = true;
+        } else if (pcb->metadata.state == RUNNING) {
+            pcb->metadata.suspend_pending = true;
+        }
+    }
+}
+
+// Saat instance terbaru berhenti, aktifkan kembali instance lama terbaru
+// dari executable yang sama.
+static void process_resume_older_instance(uint32_t program_inode) {
+    bool has_current_instance = false;
+    int32_t newest_suspended = -1;
+    uint32_t newest_seq = 0;
+
+    for (uint32_t i = 0; i < PROCESS_COUNT_MAX; i++) {
+        struct ProcessControlBlock *pcb = &_process_list[i];
+        if (!pcb->metadata.active || pcb->metadata.program_inode != program_inode)
+            continue;
+
+        if (!pcb->metadata.suspended) {
+            has_current_instance = true;
+        } else if (pcb->metadata.state == WAITING && pcb->metadata.start_seq >= newest_seq) {
+            newest_seq = pcb->metadata.start_seq;
+            newest_suspended = (int32_t) i;
+        }
+    }
+
+    if (has_current_instance || newest_suspended < 0)
+        return;
+
+    struct ProcessControlBlock *pcb = &_process_list[newest_suspended];
+    pcb->metadata.suspended = false;
+    pcb->metadata.suspend_pending = false;
+    pcb->metadata.state = READY;
 }
 
 struct ProcessControlBlock* process_get_current_running_pcb_pointer(void) {
@@ -77,6 +127,13 @@ int32_t process_create_user_process(struct EXT2DriverRequest request) {
     struct PageDirectory *old_page_dir = paging_get_current_page_directory_addr();
     struct PageDirectory *new_page_dir = NULL;
     struct ProcessControlBlock *new_pcb = NULL;
+
+    if (request.name == NULL || request.name_len == 0)
+        return PROCESS_CREATE_FAIL_FS_READ_FAILURE;
+
+    uint32_t program_inode = find_file_entry(request.parent_inode, request.name, request.name_len);
+    if (program_inode == 0)
+        return PROCESS_CREATE_FAIL_FS_READ_FAILURE;
 
     // 0. Validasi
     if (process_manager_state.active_process_count >= PROCESS_COUNT_MAX) {
@@ -164,7 +221,13 @@ int32_t process_create_user_process(struct EXT2DriverRequest request) {
     new_pcb->metadata.pid    = process_generate_new_pid();
     new_pcb->metadata.state  = READY;
     new_pcb->metadata.active = true;
+    new_pcb->metadata.program_inode = program_inode;
+    new_pcb->metadata.start_seq = process_manager_state.next_start_seq++;
     process_manager_state.active_process_count++;
+
+    // Boleh ada banyak instance, tetapi instance lama dari program yang sama
+    // ditahan sampai instance terbaru berhenti.
+    process_suspend_older_instances(program_inode, new_pcb->metadata.pid);
 
 exit_cleanup:
     // Rollback kalau gagal setelah address space dibuat
@@ -187,6 +250,7 @@ bool process_destroy(uint32_t pid) {
     }
     struct ProcessControlBlock *pcb = &_process_list[index];
     struct PageDirectory *page_dir = pcb->context.page_directory_virtual_addr;
+    uint32_t program_inode = pcb->metadata.program_inode;
     struct PageDirectory *old_page_dir = paging_get_current_page_directory_addr();
 
     // Frame user hanya bisa dibebaskan saat page directory miliknya aktif
@@ -203,5 +267,8 @@ bool process_destroy(uint32_t pid) {
 
     memset(pcb, 0, sizeof(struct ProcessControlBlock));
     process_manager_state.active_process_count--;
+
+    // Instance terbaru sudah berhenti; instance lama terbaru boleh lanjut.
+    process_resume_older_instance(program_inode);
     return true;
 }

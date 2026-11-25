@@ -37,6 +37,7 @@ enum SyscallNumber {
     SYS_KILL              = 12, // ebx = pid, ecx = int8_t* result (PROCESS_KILL_*)
     SYS_PROCESS_INFO      = 16, // ebx = ProcessInfo[], ecx = capacity, edx = uint32_t* count
     SYS_FS_MOVE           = 17, // ebx = src EXT2DriverRequest*, ecx = dst EXT2DriverRequest*, edx = int8_t* retcode
+    SYS_YIELD             = 20, // simpan context proses aktif lalu jadwalkan proses lain
 };
 
 struct ShellIO {

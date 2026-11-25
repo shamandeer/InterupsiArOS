@@ -25,9 +25,18 @@ static int32_t next_queue(void) {
 
 void scheduler_save_context_to_current_running_pcb(struct Context ctx) {
     if (current_process_schedule_index == -1) return;
-    if (!_process_list[current_process_schedule_index].metadata.active || _process_list[current_process_schedule_index].metadata.state != RUNNING) return;
 
-    _process_list[current_process_schedule_index].context = ctx;
+    struct ProcessControlBlock *pcb = &_process_list[current_process_schedule_index];
+    if (!pcb->metadata.active || pcb->metadata.state != RUNNING) return;
+
+    pcb->context = ctx;
+
+    // Instance lama dari program yang sama disimpan sampai instance baru selesai.
+    if (pcb->metadata.suspend_pending) {
+        pcb->metadata.suspend_pending = false;
+        pcb->metadata.suspended = true;
+        pcb->metadata.state = WAITING;
+    }
 }
 
 void scheduler_switch_to_next_process(void) {
@@ -47,7 +56,9 @@ void scheduler_switch_to_next_process(void) {
     }
 
     if (current_process_schedule_index != -1) {
-        _process_list[current_process_schedule_index].metadata.state = READY;
+        struct ProcessControlBlock *current = &_process_list[current_process_schedule_index];
+        if (current->metadata.active && current->metadata.state == RUNNING)
+            current->metadata.state = READY;
     }
     current_process_schedule_index = next;
     _process_list[next].metadata.state = RUNNING;

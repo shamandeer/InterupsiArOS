@@ -88,6 +88,10 @@ struct ProcessControlBlock {
         uint32_t pid;
         PROCESS_STATE state;
         char name[PROCESS_NAME_LENGTH_MAX];
+        uint32_t program_inode;   // executable yang dijalankan
+        uint32_t start_seq;       // urutan instance
+        bool suspend_pending;     // instance RUNNING yang harus di-WAITING-kan
+        bool suspended;           // instance lama yang disimpan karena duplikat
     } metadata;
 
     struct Context context;

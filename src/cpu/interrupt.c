@@ -305,6 +305,18 @@ void syscall(struct InterruptFrame frame) {
             *ticks = timer_ticks;
             break;
         }
+        case 20: { // yield: simpan context lalu biarkan scheduler memilih proses lain
+            struct Context context = {
+                .cpu = frame.cpu,
+                .eip = frame.int_stack.eip,
+                .eflags = frame.int_stack.eflags,
+                .page_directory_virtual_addr = paging_get_current_page_directory_addr()
+            };
+            context.cpu.stack.esp = frame.int_stack.esp;
+            scheduler_save_context_to_current_running_pcb(context);
+            scheduler_switch_to_next_process();
+            break;
+        }
     }
 }
 
