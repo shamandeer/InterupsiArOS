@@ -5,12 +5,16 @@
 #include "header/driver/mouse.h"
 #include "header/driver/ps2.h"
 #include "header/driver/cmos.h"
+#include "header/driver/speaker.h"
 #include "header/memory/swap.h"
 #include "header/text/framebuffer.h"
 #include "header/filesystem/ext2.h"
 #include "header/stdlib/string.h"
 #include "header/process/scheduler.h"
 #include "header/process/process-info.h"
+
+// Jumlah IRQ0 sejak boot, PIT_TIMER_FREQUENCY 1000 Hz jadi 1 tick = 1 ms
+static volatile uint32_t timer_ticks = 0;
 
 struct TSSEntry _interrupt_tss_entry = {
     .ss0 = GDT_KERNEL_DATA_SEGMENT_SELECTOR,
@@ -280,6 +284,27 @@ void syscall(struct InterruptFrame frame) {
             syscall_process_info((struct ProcessInfo *) frame.cpu.general.ebx,
                 frame.cpu.general.ecx, (uint32_t *) frame.cpu.general.edx);
             break;
+        case 17: { // move: ebx = src request*, ecx = dst request*, edx = int8_t* retcode
+            struct EXT2DriverRequest *src = (struct EXT2DriverRequest *) frame.cpu.general.ebx;
+            struct EXT2DriverRequest *dst = (struct EXT2DriverRequest *) frame.cpu.general.ecx;
+            int8_t *retcode = (int8_t *) frame.cpu.general.edx;
+            if (!is_user_buffer(src, sizeof(*src)) || !is_user_buffer(dst, sizeof(*dst))
+                    || !is_user_buffer(retcode, sizeof(*retcode))) {
+                break;
+            }
+            *retcode = move(*src, *dst);
+            break;
+        }
+        case 18: // beep: ebx = frekuensi Hz (0 = stop), ecx = durasi ms, non-blocking
+            speaker_beep(frame.cpu.general.ebx, frame.cpu.general.ecx, timer_ticks);
+            break;
+        case 19: { // get_ticks: ebx = uint32_t* tujuan, ms sejak timer aktif
+            uint32_t *ticks = (uint32_t *) frame.cpu.general.ebx;
+            if (!is_user_buffer(ticks, sizeof(*ticks)))
+                break;
+            *ticks = timer_ticks;
+            break;
+        }
     }
 }
 
@@ -307,6 +332,8 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             // menambah syscall atau thread khusus.
             mouse_poll();
 
+            timer_ticks++;
+            speaker_update(timer_ticks);
             // intsetup.s sudah menaruh esp user di cpu.stack.esp untuk interrupt dari ring 3
             struct Context context = {
                 .cpu = frame.cpu,
