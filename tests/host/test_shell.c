@@ -704,6 +704,136 @@ static void test_mv(void) {
     CHECK_STR(run("cat y/x/x"), "file x\n");
 }
 
+// types k into shell_read_line with the given cap, screen holds everything echoed
+static const char *type_line_cap(const char *k, uint32_t cap) {
+    static char line[SHELL_LINE_MAX];
+    keys = k;
+    screen_len = 0;
+    screen[0] = '\0';
+    shell_read_line(line, cap);
+    return line;
+}
+
+static const char *type_line(const char *k) {
+    return type_line_cap(k, SHELL_LINE_MAX);
+}
+
+static void test_complete(void) {
+    reset_shell();
+
+    // 1. command with a unique prefix: completed with a trailing space
+    CHECK_STR(type_line("mk\t\n"), "mkdir ");
+    CHECK_STR(screen, "mkdir \n");
+    CHECK_STR(type_line("e\t\n"), "exec ");
+    CHECK_STR(type_line("s\t\n"), "sh ");
+    CHECK_STR(type_line("f\t\n"), "find ");
+    CHECK_STR(type_line("mkdir\t\n"), "mkdir ");
+
+    // 2. many commands (cd, cp, cat): common prefix "c" can not grow, first Tab does nothing
+    CHECK_STR(type_line("c\t\n"), "c");
+    CHECK_STR(screen, "c\n");
+    // second Tab in a row lists them, then redraws prompt + line, and typing goes on
+    CHECK_STR(type_line("c\t\tat\n"), "cat");
+    CHECK_STR(screen, "c\ncd  cp  cat\nInterupsiArOS:/$ cat\n");
+    CHECK_STR(type_line("m\t\tv\n"), "mv");
+    CHECK_STR(screen, "m\nmkdir  mv\nInterupsiArOS:/$ mv\n");
+    // another key between the two Tabs resets it, so no list
+    CHECK_STR(type_line("c\tx\b\t\n"), "c");
+    CHECK_STR(screen, "cx\b \b\n");
+
+    // 3. files in the cwd
+    put_file("alpha.txt", "a\n");
+    put_file("beta1.txt", "b\n");
+    put_file("beta2.txt", "b\n");
+    CHECK_STR(type_line("cat al\t\n"), "cat alpha.txt ");
+    CHECK_STR(screen, "cat alpha.txt \n");
+    CHECK_STR(type_line("cat be\t\n"), "cat beta");
+    CHECK_STR(type_line("cat be\t\t\n"), "cat beta");
+    CHECK_STR(screen, "cat beta\nbeta1.txt  beta2.txt\nInterupsiArOS:/$ cat beta\n");
+    CHECK_STR(type_line("cat beta2\t\n"), "cat beta2.txt ");
+    CHECK_STR(type_line("cat zz\t\t\n"), "cat zz");
+    CHECK_STR(screen, "cat zz\n");
+
+    // 4. folders get a '/', the next Tab goes on inside them
+    CHECK_STR(run("mkdir docs"), "");
+    CHECK_STR(run("mkdir docs/notes"), "");
+    put_file_in("/docs/notes", "todo.txt", "x\n");
+    CHECK_STR(type_line("cd do\t\n"), "cd docs/");
+    CHECK_STR(type_line("cd do\tno\t\n"), "cd docs/notes/");
+    CHECK_STR(screen, "cd docs/notes/\n");
+    CHECK_STR(type_line("cat do\t\t\t\n"), "cat docs/notes/todo.txt ");
+    // empty word lists the whole cwd ("." and ".." are left out)
+    CHECK_STR(type_line("ls \t\t\n"), "ls ");
+    CHECK_STR(screen, "ls \nalpha.txt  beta1.txt  beta2.txt  docs/\nInterupsiArOS:/$ ls \n");
+
+    // 5. absolute and relative paths, missing folder, a file used as a folder
+    put_file("demo.sh", "ls\n");
+    put_file("demo2.sh", "ls\n");
+    CHECK_STR(type_line("cat /dem\t\n"), "cat /demo");
+    CHECK_STR(type_line("cat /dem\t.\t\n"), "cat /demo.sh ");
+    CHECK_STR(type_line("./de\t\n"), "./demo");
+    CHECK_STR(run("cd docs"), "");
+    CHECK_STR(type_line("ls ../al\t\n"), "ls ../alpha.txt ");
+    CHECK_STR(type_line("ls ../do\t\n"), "ls ../docs/");
+    CHECK_STR(type_line("cat /docs/notes/t\t\n"), "cat /docs/notes/todo.txt ");
+    CHECK_STR(type_line("cd ..\t\n"), "cd ../");
+    CHECK_STR(type_line("ls .\t\t\n"), "ls .");
+    CHECK_STR(screen, "ls .\n./  ../\nInterupsiArOS:/docs$ ls .\n");
+    CHECK_STR(type_line("ls nope/\t\t\n"), "ls nope/");
+    CHECK_STR(screen, "ls nope/\n");
+    CHECK_STR(type_line("ls ../alpha.txt/\t\t\n"), "ls ../alpha.txt/");
+    CHECK_STR(run("cd /"), "");
+
+    // 6. first word after '|' is a command again, the words after it are files
+    CHECK_STR(type_line("ls | gr\t\n"), "ls | grep ");
+    CHECK_STR(type_line("ls|gr\t\n"), "ls|grep ");
+    CHECK_STR(type_line("cat alpha.txt | grep al\t\n"), "cat alpha.txt | grep alpha.txt ");
+
+    // 7. file and folder with the same name are two candidates
+    put_file("x", "file\n");
+    CHECK_STR(run("mkdir x"), "");
+    CHECK_STR(type_line("cat x\t\n"), "cat x");
+    CHECK_STR(type_line("cat x\t\t\n"), "cat x");
+    CHECK_STR(screen, "cat x\nx  x/\nInterupsiArOS:/$ cat x\n");
+
+    // the list starts a new row before going past 80 columns
+#define A19 "aaaaaaaaaaaaaaaaaaa"
+    CHECK_STR(run("mkdir wide"), "");
+    put_file_in("/wide", A19 "1", "x\n");
+    put_file_in("/wide", A19 "2", "x\n");
+    put_file_in("/wide", A19 "3", "x\n");
+    put_file_in("/wide", A19 "4", "x\n");
+    CHECK_STR(type_line("ls wide/\t\t\n"), "ls wide/" A19);
+    CHECK_STR(screen,
+        "ls wide/" A19 "\n"
+        A19 "1  " A19 "2  " A19 "3\n"
+        A19 "4\n"
+        "InterupsiArOS:/$ ls wide/" A19 "\n");
+#undef A19
+
+    // 8. line limit cap - 1: all or nothing
+    CHECK_STR(type_line_cap("cat al\t\n", 14), "cat al");
+    CHECK_STR(screen, "cat al\n");
+    CHECK_STR(type_line_cap("cat al\t\n", 15), "cat alpha.txt ");
+    CHECK_STR(type_line_cap("cat be\t\n", 8), "cat be");
+    CHECK_STR(type_line_cap("cat be\t\n", 9), "cat beta");
+
+    // 9. Tab, Backspace, Enter runs the right command, and the line goes into history
+    const char *line = type_line("mk\t\b newdir\n");
+    CHECK_STR(line, "mkdir newdir");
+    CHECK_STR(screen, "mkdir \b \b newdir\n");
+    char copy[SHELL_LINE_MAX];
+    strcpy(copy, line);
+    CHECK_STR(run(copy), "");
+    CHECK_STR(run("ls newdir"), "");
+    CHECK_STR(run("ls nope"), "ls: nope: no such directory\n");
+    CHECK_STR(type_line("\x80\n"), "mkdir newdir");
+    CHECK_STR(type_line("ca\t\n"), "cat ");
+    CHECK_STR(type_line("\x80\x80\n"), "mkdir newdir");
+    // history keeps duplicates: newest is that "mkdir newdir", the one before is "cat "
+    CHECK_STR(type_line("\x80\x80\n"), "cat ");
+}
+
 int main(void) {
     test_parser();
     test_dispatch();
@@ -718,6 +848,7 @@ int main(void) {
     test_process_commands();
     test_find();
     test_mv();
+    test_complete();
     printf("%d passed, %d failed\n", passes, fails);
     return fails != 0;
 }

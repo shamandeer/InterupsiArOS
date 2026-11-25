@@ -84,11 +84,19 @@ void shell_print_prompt(void) {
 
 void shell_read_line(char *line, uint32_t cap) {
     uint32_t len = 0;
+    bool last_was_tab = false;
     history.pos = history.count;
     history.is_draft = true;
     while (true) {
         char c = 0;
         syscall(SYS_GETCHAR, (uintptr_t) &c, 0, 0);
+
+        if (c == '\t') {
+            shell_complete(line, &len, cap, last_was_tab);
+            last_was_tab = true;
+            continue;
+        }
+        last_was_tab = false;
 
         if ((uint8_t)c == 0x80) {
             navigate_up(&history, line, &len);
@@ -125,6 +133,18 @@ void shell_replace_line(char* dst_line, uint32_t *len, const char* src_line) {
     memcpy(dst_line, src_line, *len);
     dst_line[*len] = '\0';
     shell_puts(dst_line, SHELL_COLOR_DEFAULT);
+}
+
+// "sh" is not in commands[] (shell_execute_line handles it), but it is still a command to complete
+const char *shell_command_name(uint32_t index) {
+    uint32_t count = sizeof(commands) / sizeof(commands[0]);
+    if (index < count) {
+        return commands[index].name;
+    }
+    if (index == count) {
+        return "sh";
+    }
+    return NULL;
 }
 
 static command_fn find_command(const char *name) {

@@ -131,6 +131,15 @@ void shell_read_line(char *line, uint32_t cap);
 void shell_replace_line(char* dst_line, uint32_t *len, const char* src_line);
 void shell_execute_line(char *line);
 void shell_run(void);
+// names for tab completion: commands[] in order, then "sh", then NULL
+const char *shell_command_name(uint32_t index);
+
+
+/* complete.c */
+
+// Tab on the line being typed: completes the last word from command names (first word of a stage)
+// or file / folder names. show_all (previous key was also Tab) lists the candidates when nothing can be added
+void shell_complete(char *line, uint32_t *len, uint32_t cap, bool show_all);
 
 
 /* script.c */
