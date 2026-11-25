@@ -4,10 +4,10 @@
 OS untuk manusia yang ingin berjuang di medan perang (nanti ditambahin lagi)
 
 ## Manusia Pencari Kebenaran
-1. Dipta
-2. Aqsha
-3. Bagas
-4. Sulthan
+1. King Dipta
+2. King Aqsha
+3. King Bagas
+4. King Sulthan
 
 ## Daftar Isi
 1. [Cara Setup dan Run](#cara-setup-dan-run)
@@ -17,15 +17,6 @@ OS untuk manusia yang ingin berjuang di medan perang (nanti ditambahin lagi)
 
 ## Cara Setup dan Run
 
-Build utamanya jalan di **Linux / WSL** (macOS juga didukung lewat `clang`, `ld.lld`, dan `mkisofs`). Kalau pakai Ubuntu/Debian/WSL, install dulu paketnya:
-
-```bash
-sudo apt update
-sudo apt install build-essential gcc-multilib nasm genisoimage qemu-system-x86 qemu-utils
-```
-
-Setelah itu, tinggal jalankan urutan ini dari root repo:
-
 ```bash
 make disk        # bikin disk virtual 8 MiB (bin/storage.bin)
 make build       # compile kernel & bikin ISO (bin/OS2025.iso)
@@ -34,10 +25,10 @@ make run         # jalankan InterupsiArOS di QEMU
 ```
 
 Target tambahan yang bisa dipakai:
-- `make run-audio`: jalankan QEMU dengan PC Speaker nyala (`QEMU_AUDIO_DRIVER=pa|dsound|coreaudio`).
-- `make debug`: jalankan QEMU dalam mode pause (`-s -S`) buat GDB di port `1234` (lanjutkan pakai `c` di GDB atau `cont` di monitor QEMU).
+- `make run-audio`: Buat audido
+- `make debug`: QEMU pake -s dan -S
 - `make test`, `make test-swap`, `make test-shell`: jalankan host test untuk EXT2, swap, dan shell.
-- `make clean`: bersihkan hasil build di `bin/`.
+- `make clean`: Clean bin
 
 ## Pendahuluan (Wajib Baca)
 Dunia ini penuh dengan kegelapan, kebodohan, dan kepengecutan. Nilai-nilai inheren yang tumbuh di jiwa manusia sejak eksistensi mereka dihembuskan oleh Prometheus, jiwa-jiwa pejuang yang haus akan kemenangan dan tak tergoyahkan sekalipun oleh kehancuran tempat tinggalnya dan jatuhnya jasad rekan sejati mereka di medan perang, telah hilang. Kini, manusia berada di titik terendah spesies mereka. Sekumpulan organisme yang seharusnya merupakan puncak rantai makanan dari segala makhluk yang pernah hidup di muka bumi telah kehilangan status mereka sebagai entitas terkuat di bawah para dewa-dewi, menjadi makhluk terhina, yang eksistensinya merupakan pengkhianatan terhadap para dewa-dewi itu sendiri.
@@ -50,13 +41,12 @@ Tidak ada ruang untuk kelemahan dan ketidaksiapan di sini. Yang akan hidup hanya
 
 ## Fitur yang Diimplementasikan
 
-- **Kernel & Protected Mode**: Boot GRUB Multiboot 32-bit (stack 2 MiB), GDT + TSS, IDT, PIC 8259, dan PIT Timer.
-- **Paging & Swap Space**: Higher-Half Kernel Paging (`0xC0000000`), isolasi page directory per proses, serta swap ke disk dengan algoritma Clock (*Second-Chance*).
-- **Driver Hardware**: VGA Text Framebuffer (80x25), PS/2 Keyboard (termasuk *Shift* & panah), PS/2 Mouse, ATA PIO Disk, CMOS RTC, dan PC Speaker.
-- **EXT2 Filesystem**: Implementasi EXT2 lengkap (`read`, `read_directory`, `write`, `delete`, `move`) plus `external-inserter` buat injeksi file ke disk.
-- **User Mode & Syscall**: Eksekusi program Ring 3 lewat `iret` dan layanan `int 0x30` untuk I/O, EXT2, proses, waktu RTC, dan audio.
-- **Interactive Shell**: Mendukung pipeline (`|`), Tab autocompletion, command history, shell script (`.sh` / `sh`), serta command `cd`, `ls`, `mkdir`, `cat`, `cp`, `rm`, `mv`, `find`, `grep`, `exec`, `ps`, `kill`.
-- **Preemptive Multitasking & User Programs**: Round-Robin scheduler berbasis timer interrupt beserta program `clock`, `spinner`, `hello`, dan `music`.
+- **Paging & Swap Space**: Higher-Half Kernel Paging (`0xC0000000`), isolasi page directory per proses, serta swap space dengan algoritma second chance
+- **Driver Hardware**: VGA Text Framebuffer (80x25), PS/2 KBM, some extended modes, ATA PIO Disk, CMOS RTC, dan PC Speaker.
+- **EXT2 Filesystem**: Filesystem EXT2, dengan operasi CRUD dasar.
+- **User Mode & Syscall**: Program w/ ring 3 access. Ada syscall sebagai abstraksinya/
+- **Interactive Shell**: User program shell, bisa pipeline harusnya.  Tab autocompletion, command history, shell script, command `cd`, `ls`, `mkdir`, `cat`, `cp`, `rm`, `mv`, `find`, `grep`, `exec`, `ps`, `kill`.
+- **Preemptive Multitasking & User Programs**: Round-Robin scheduler dan program `clock`, `spinner`, `hello`, dan `music`. Bisa multitasking juga, concurrency, dll. buzzword buzzword
 
 ## Contoh Penggunaan di Shell
 
