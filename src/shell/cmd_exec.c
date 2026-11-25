@@ -33,11 +33,11 @@ void cmd_exec(int argc, char **argv, struct ShellIO *io) {
     syscall(SYS_EXEC, (uintptr_t) &request, (uintptr_t) &retcode, (uintptr_t) &pid);
 
     if (retcode == 0) {
-        shell_io_puts(io, "[exec] ");
-        shell_io_write(io, file.name, file.name_len);
-        shell_io_puts(io, " berjalan dengan PID ");
-        shell_io_putu(io, pid);
-        shell_io_putc(io, '\n');
+        // Instance lama disuspend oleh process manager. Yield sekarang agar
+        // context shell lama tersimpan sebelum instance baru dijadwalkan.
+        // exec tidak mencetak pesan sukses; prompt shell baru sudah cukup.
+        (void) pid;
+        syscall(SYS_YIELD, 0, 0, 0);
         return;
     }
     bool known = retcode > 0 && (uint32_t) retcode < sizeof(exec_errors) / sizeof(exec_errors[0]);
