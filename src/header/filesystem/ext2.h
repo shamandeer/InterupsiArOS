@@ -412,6 +412,19 @@ int8_t write(struct EXT2DriverRequest *request);
  */
 int8_t delete(struct EXT2DriverRequest request);
 
+/**
+ * @brief EXT2 move, move and/or rename a file or a folder. The directory entry is moved,
+ * the inode stays the same (content is not copied). Every check is done before the disk is changed.
+ * If a folder gets a new parent, its .. entry is updated to the new parent
+ * Disk effect: both parent directory blocks (may grow / shrink), .. entry of a moved folder, then commit_metadata()
+ * @param src parent_inode, name, name_len of the entry to move, is_directory chooses folder or file. buf and buffer_size are unused
+ * @param dst parent_inode of the destination folder, name and name_len of the new name. buf, buffer_size and is_directory are unused
+ * @return Error code: 0 success - 1 source not found - 2 destination parent invalid / not a folder
+ * - 3 destination name already used by an entry of the same type - 4 folder moved into itself or its descendant
+ * - 5 invalid name, or source is root / "." / ".." - 6 can not add entry (destination folder full) - -1 unknown
+ */
+int8_t move(struct EXT2DriverRequest src, struct EXT2DriverRequest dst);
+
 /* =============================== MEMORY ==========================================*/
 
 /**

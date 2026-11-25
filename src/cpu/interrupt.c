@@ -273,6 +273,17 @@ void syscall(struct InterruptFrame frame) {
             syscall_process_info((struct ProcessInfo *) frame.cpu.general.ebx,
                 frame.cpu.general.ecx, (uint32_t *) frame.cpu.general.edx);
             break;
+        case 17: { // move: ebx = src request*, ecx = dst request*, edx = int8_t* retcode
+            struct EXT2DriverRequest *src = (struct EXT2DriverRequest *) frame.cpu.general.ebx;
+            struct EXT2DriverRequest *dst = (struct EXT2DriverRequest *) frame.cpu.general.ecx;
+            int8_t *retcode = (int8_t *) frame.cpu.general.edx;
+            if (!is_user_buffer(src, sizeof(*src)) || !is_user_buffer(dst, sizeof(*dst))
+                    || !is_user_buffer(retcode, sizeof(*retcode))) {
+                break;
+            }
+            *retcode = move(*src, *dst);
+            break;
+        }
     }
 }
 

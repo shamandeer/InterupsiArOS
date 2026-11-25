@@ -36,6 +36,7 @@ enum SyscallNumber {
     SYS_EXEC              = 11, // ebx = EXT2DriverRequest*, ecx = int32_t* retcode, edx = uint32_t* pid
     SYS_KILL              = 12, // ebx = pid, ecx = int8_t* result (PROCESS_KILL_*)
     SYS_PROCESS_INFO      = 16, // ebx = ProcessInfo[], ecx = capacity, edx = uint32_t* count
+    SYS_FS_MOVE           = 17, // ebx = src EXT2DriverRequest*, ecx = dst EXT2DriverRequest*, edx = int8_t* retcode
 };
 
 struct ShellIO {
