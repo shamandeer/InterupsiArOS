@@ -4,62 +4,46 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "header/cpu/interrupt.h"
 
 #define EXT_SCANCODE_UP        0x48
 #define EXT_SCANCODE_DOWN      0x50
 #define EXT_SCANCODE_LEFT      0x4B
 #define EXT_SCANCODE_RIGHT     0x4D
+#define EXT_SCANCODE_HOME      0x47
+#define EXT_SCANCODE_END       0x4F
+#define EXT_SCANCODE_DELETE    0x53
+#define EXT_SCANCODE_PAGE_UP   0x49
+#define EXT_SCANCODE_PAGE_DOWN 0x51
 
 #define KEYBOARD_DATA_PORT     0x60
 #define EXTENDED_SCANCODE_BYTE 0xE0
-#define KEYBOARD_UP_BYTE 0x80
-#define KEYBOARD_DOWN_BYTE 0x81
 
-/**
- * keyboard_scancode_1_to_ascii_map[256], Convert scancode values that correspond to ASCII printables
- * How to use this array: ascii_char = k[scancode]
- * 
- * By default, QEMU using scancode set 1 (from empirical testing)
- */
+// Event keyboard berada di luar rentang ASCII printable (0x20..0x7E).
+#define KEYBOARD_EVENT_UP        0x80
+#define KEYBOARD_EVENT_DOWN      0x81
+#define KEYBOARD_EVENT_LEFT      0x82
+#define KEYBOARD_EVENT_RIGHT     0x83
+#define KEYBOARD_EVENT_HOME      0x84
+#define KEYBOARD_EVENT_END       0x85
+#define KEYBOARD_EVENT_DELETE    0x86
+#define KEYBOARD_EVENT_PAGE_UP   0x87
+#define KEYBOARD_EVENT_PAGE_DOWN 0x88
+
+// Nama lama yang sudah dipakai shell/history.
+#define KEYBOARD_UP_BYTE   KEYBOARD_EVENT_UP
+#define KEYBOARD_DOWN_BYTE KEYBOARD_EVENT_DOWN
+
 extern const char keyboard_scancode_1_to_ascii_map[256];
+extern const char alt_keyboard_scancode_1_to_ascii_map[256];
 
-/**
- * KeyboardDriverState - Contain all driver states
- * 
- * @param read_extended_mode Optional, can be used for signaling next read is extended scancode (ex. arrow keys)
- * @param shift_mode If shift is held
- * @param keyboard_input_on  Indicate whether keyboard ISR is activated or not
- * @param keyboard_buffer    Storing keyboard input values in ASCII
- */
-struct KeyboardDriverState {
-    bool read_extended_mode;
-    bool shift_mode;
-    bool keyboard_input_on;
-    char keyboard_buffer;
-} __attribute((packed));
-
-
-
-
-
-/* -- Driver Interfaces -- */
-
-// Activate keyboard ISR / start listen keyboard & save to buffer
+void keyboard_init(void);
 void keyboard_state_activate(void);
-
-// Deactivate keyboard ISR / stop listening keyboard interrupt
 void keyboard_state_deactivate(void);
 
-// Get keyboard buffer value and flush the buffer - @param buf Pointer to char buffer
-void get_keyboard_buffer(char *buf);
+// Ambil satu event keyboard. Return false jika belum ada event.
+bool keyboard_get_event(uint8_t *event);
 
-/* -- Keyboard Interrupt Service Routine -- */
-
-/**
- * Handling keyboard interrupt & process scancodes into ASCII character.
- * Will start listen and process keyboard scancode if keyboard_input_on.
- */
-void keyboard_isr(void);
+// Kompatibilitas dengan syscall lama: isi buf dengan event, atau 0 jika kosong.
+void get_keyboard_buffer(uint8_t *buf);
 
 #endif

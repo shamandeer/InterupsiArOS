@@ -27,7 +27,15 @@
  * @param fg  Foreground / Character color
  * @param bg  Background color
  */
+typedef void (*framebuffer_write_hook)(uint8_t row, uint8_t col);
+
 void framebuffer_write(uint8_t row, uint8_t col, char c, uint8_t fg, uint8_t bg);
+
+/**
+ * Pasang callback yang dipanggil setelah satu sel selesai ditulis.
+ * Dipakai kursor mouse agar tetap terlihat saat teks di bawahnya berubah.
+ */
+void framebuffer_set_write_hook(framebuffer_write_hook hook);
 
 /**
  * Set cursor to specified location. Row and column starts from 0

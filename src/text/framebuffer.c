@@ -4,6 +4,12 @@
 #include "header/text/framebuffer.h"
 #include "header/cpu/portio.h"
 
+static framebuffer_write_hook write_hook;
+
+void framebuffer_set_write_hook(framebuffer_write_hook hook) {
+    write_hook = hook;
+}
+
 void framebuffer_write(uint8_t row, uint8_t col, char c, uint8_t fg, uint8_t bg) {
     if (row >= 25 || col >= 80)
         return;
@@ -11,6 +17,9 @@ void framebuffer_write(uint8_t row, uint8_t col, char c, uint8_t fg, uint8_t bg)
     uint32_t offset = ((uint32_t)(row * 80) + col) * 2;
     FRAMEBUFFER_MEMORY_OFFSET[offset]     = (uint8_t)c;
     FRAMEBUFFER_MEMORY_OFFSET[offset + 1] = (uint8_t)(((bg & 0x0F) << 4) | (fg & 0x0F));
+
+    if (write_hook)
+        write_hook(row, col);
 }
 
 void framebuffer_set_cursor(uint8_t r, uint8_t c) {
