@@ -95,6 +95,9 @@ void syscall(uint32_t eax, uintptr_t ebx, uintptr_t ecx, uintptr_t edx) {
         case SYS_FS_DELETE:
             *(int8_t *) ecx = delete(*(struct EXT2DriverRequest *) ebx);
             break;
+        case SYS_FS_MOVE:
+            *(int8_t *) edx = move(*(struct EXT2DriverRequest *) ebx, *(struct EXT2DriverRequest *) ecx);
+            break;
         case SYS_GETCHAR:
             if (*keys == '\0') {
                 printf("  FAIL key script exhausted\n");
@@ -143,6 +146,21 @@ static void put_file(const char *name, const char *content) {
     struct EXT2DriverRequest request = {
         .buf = (void *) content, .name = (char *) name, .name_len = (uint8_t) strlen(name),
         .parent_inode = ROOT_INODE, .buffer_size = (uint32_t) strlen(content),
+    };
+    write(&request);
+}
+
+// like put_file, but inside the folder at dir (resolved from the current cwd)
+static void put_file_in(const char *dir, const char *name, const char *content) {
+    uint32_t parent = 0;
+    if (!shell_resolve_dir(dir, &parent)) {
+        printf("  FAIL put_file_in: no folder %s\n", dir);
+        fails++;
+        return;
+    }
+    struct EXT2DriverRequest request = {
+        .buf = (void *) content, .name = (char *) name, .name_len = (uint8_t) strlen(name),
+        .parent_inode = parent, .buffer_size = (uint32_t) strlen(content),
     };
     write(&request);
 }
@@ -494,6 +512,198 @@ static void test_process_commands(void) {
     CHECK_STR(run("exec /clock"), "[exec] gagal: jumlah process sudah maksimum\n");
 }
 
+static void test_find(void) {
+    reset_shell();
+    CHECK_STR(run("mkdir docs"), "");
+    CHECK_STR(run("mkdir docs/notes"), "");
+    CHECK_STR(run("mkdir work"), "");
+    CHECK_STR(run("mkdir work/notes"), "");
+    CHECK_STR(run("mkdir work/deep"), "");
+    CHECK_STR(run("mkdir work/deep/notes"), "");
+    put_file("notes", "root file\n");
+    put_file_in("/docs", "todo.txt", "x\n");
+    put_file_in("/work/deep", "notes", "deep file\n");
+
+    // one result
+    CHECK_STR(run("find todo.txt"), "/docs/todo.txt\n");
+    // a folder matches with a trailing '/'
+    CHECK_STR(run("find deep"), "/work/deep/\n");
+    // many results at different depths, DFS in entry order, file and folder with the same name
+    CHECK_STR(run("find notes"),
+        "/docs/notes/\n"
+        "/work/notes/\n"
+        "/work/deep/notes/\n"
+        "/work/deep/notes\n"
+        "/notes\n");
+    // pipeline
+    CHECK_STR(run("find notes | grep deep"), "/work/deep/notes/\n/work/deep/notes\n");
+    // always searches from root and prints absolute paths, whatever the cwd is
+    CHECK_STR(run("cd work/deep"), "");
+    CHECK_STR(run("find todo.txt"), "/docs/todo.txt\n");
+    CHECK_STR(run("cd /"), "");
+
+    // errors, . and .. are never matched
+    CHECK_STR(run("find nope"), "find: 'nope' not found\n");
+    CHECK_STR(run("find .."), "find: '..' not found\n");
+    CHECK_STR(run("find nope | grep x"), "find: 'nope' not found\n");
+    CHECK_STR(run("find"), "find: missing operand\n");
+    CHECK_STR(run("find a b"), "find: too many arguments\n");
+
+    // 10 levels deep
+    reset_shell();
+    char path[256] = "";
+    char command[300];
+    for (int i = 1; i <= 10; i++) {
+        size_t len = strlen(path);
+        snprintf(path + len, sizeof(path) - len, "/l%d", i);
+        snprintf(command, sizeof(command), "mkdir %s", path);
+        CHECK_STR(run(command), "");
+    }
+    put_file_in(path, "target", "x\n");
+    char expected[300];
+    snprintf(expected, sizeof(expected), "%s/target\n", path);
+    CHECK_STR(run("find target"), expected);
+    snprintf(expected, sizeof(expected), "%s/\n", path);
+    CHECK_STR(run("find l10"), expected);
+
+    // deeper than the limit: 34 nested folders "x", the subtree below level 33 is skipped with one warning
+    reset_shell();
+    for (int i = 0; i < 34; i++) {
+        CHECK_STR(run("mkdir x"), "");
+        CHECK_STR(run("cd x"), "");
+    }
+    put_file_in(".", "leaf", "x\n");
+    CHECK_STR(run("cd /"), "");
+    CHECK_STR(run("find leaf"),
+        "find: folders deeper than 32 levels are skipped\n"
+        "find: 'leaf' not found\n");
+    // folders up to level 33 are still matched (seen inside level 32)
+    const char *out = run("find x | grep x");
+    size_t lines = 0;
+    for (const char *p = out; *p; p++) {
+        if (*p == '\n') {
+            lines++;
+        }
+    }
+    CHECK(strncmp(out, "find: folders deeper than 32 levels are skipped\n", 48) == 0);
+    CHECK(lines == 1 + 33);
+}
+
+static void test_mv(void) {
+    reset_shell();
+    put_file("a.txt", "alpha\n");
+    CHECK_STR(run("mkdir d"), "");
+    CHECK_STR(run("mkdir e"), "");
+
+    // rename a file
+    CHECK_STR(run("mv a.txt b.txt"), "");
+    CHECK_STR(run("cat b.txt"), "alpha\n");
+    CHECK_STR(run("cat a.txt"), "cat: a.txt: no such file\n");
+
+    // file into a folder, keeps its name
+    CHECK_STR(run("mv b.txt d"), "");
+    CHECK_STR(run("ls d"), "b.txt\n");
+    CHECK_STR(run("cat d/b.txt"), "alpha\n");
+
+    // relative path with .. and absolute paths
+    CHECK_STR(run("cd d"), "");
+    CHECK_STR(run("mv b.txt ../e/c.txt"), "");
+    CHECK_STR(run("ls"), "");
+    CHECK_STR(run("cat /e/c.txt"), "alpha\n");
+    CHECK_STR(run("mv /e/c.txt /d"), "");
+    CHECK_STR(run("mv ./c.txt ./c2.txt"), "");
+    CHECK_STR(run("ls"), "c2.txt\n");
+    CHECK_STR(run("cd /"), "");
+
+    // rename a folder
+    // new entries take the first free slot (left by the moved a.txt), so f comes before d
+    CHECK_STR(run("mv e f"), "");
+    CHECK_STR(run("ls"), "f/\nd/\n");
+
+    // folder with content into another folder, then use it from the new place
+    CHECK_STR(run("mkdir d/sub"), "");
+    put_file_in("/d/sub", "inner.txt", "inside\n");
+    CHECK_STR(run("mv d f"), "");
+    CHECK_STR(run("ls"), "f/\n");
+    CHECK_STR(run("ls f"), "d/\n");
+    CHECK_STR(run("ls f/d"), "sub/\nc2.txt\n");
+    CHECK_STR(run("cat f/d/sub/inner.txt"), "inside\n");
+    CHECK_STR(run("cd f/d/sub"), "");
+    CHECK_STR(prompt(), "InterupsiArOS:/f/d/sub$ ");
+    CHECK_STR(run("cat inner.txt"), "inside\n");
+    CHECK_STR(run("cd .."), "");
+    CHECK_STR(prompt(), "InterupsiArOS:/f/d$ ");
+    CHECK_STR(run("ls"), "sub/\nc2.txt\n");
+    CHECK_STR(run("cd ../.."), "");
+    CHECK_STR(prompt(), "InterupsiArOS:/$ ");
+
+    // folder into itself or a descendant is rejected, also mv a a and mv a .
+    CHECK_STR(run("mv f f"), "mv: cannot move 'f' into itself\n");
+    CHECK_STR(run("mv f ."), "mv: target './f' already exists\n");
+    CHECK_STR(run("mv f/ f/d/sub"), "mv: cannot move 'f/' into itself\n");
+    CHECK_STR(run("mv f/d f/d"), "mv: cannot move 'f/d' into itself\n");
+    CHECK_STR(run("mv f/d f/d/sub/new"), "mv: cannot move 'f/d' into itself\n");
+    CHECK_STR(run("cd f/d"), "");
+    CHECK_STR(run("mv . sub"), "mv: cannot move '.': invalid source\n");
+    CHECK_STR(run("mv .. sub"), "mv: cannot move '..': invalid source\n");
+    CHECK_STR(run("cd /"), "");
+    // structure untouched
+    CHECK_STR(run("ls"), "f/\n");
+    CHECK_STR(run("ls f"), "d/\n");
+    CHECK_STR(run("ls f/d"), "sub/\nc2.txt\n");
+    CHECK_STR(run("ls f/d/sub"), "inner.txt\n");
+    CHECK_STR(run("cd f/d/sub"), "");
+    CHECK_STR(run("cd ../../.."), "");
+    CHECK_STR(prompt(), "InterupsiArOS:/$ ");
+
+    // target already exists (rename and move into a folder)
+    put_file("x.txt", "1\n");
+    put_file("y.txt", "2\n");
+    CHECK_STR(run("mv x.txt y.txt"), "mv: target 'y.txt' already exists\n");
+    CHECK_STR(run("mv x.txt x.txt"), "mv: target 'x.txt' already exists\n");
+    CHECK_STR(run("mkdir g"), "");
+    CHECK_STR(run("mkdir f/g"), "");
+    CHECK_STR(run("mv g f"), "mv: target 'f/g' already exists\n");
+    CHECK_STR(run("mv g f/"), "mv: target 'f/g' already exists\n");
+    CHECK_STR(run("cat y.txt"), "2\n");
+
+    // source not found, invalid target, invalid source
+    CHECK_STR(run("mv nope z"), "mv: cannot stat 'nope': no such file or directory\n");
+    CHECK_STR(run("mv nodir/a z"), "mv: cannot stat 'nodir/a': no such file or directory\n");
+    CHECK_STR(run("mv x.txt/ z"), "mv: cannot stat 'x.txt/': no such file or directory\n");
+    CHECK_STR(run("mv x.txt nodir/z"), "mv: invalid target 'nodir/z'\n");
+    CHECK_STR(run("mv x.txt f/.."), "mv: target 'f/../x.txt' already exists\n");
+    CHECK_STR(run("mv / f"), "mv: cannot move '/': invalid source\n");
+
+    // operands
+    CHECK_STR(run("mv"), "mv: missing operand\n");
+    CHECK_STR(run("mv x.txt"), "mv: missing operand\n");
+    CHECK_STR(run("mv a b c"), "mv: too many arguments\n");
+    CHECK_STR(run("ls"), "f/\nx.txt\ny.txt\ng/\n");
+
+    // file and folder with the same name
+    reset_shell();
+    put_file("x", "file x\n");
+    CHECK_STR(run("mkdir x"), "");
+    CHECK_STR(run("mkdir t"), "");
+    CHECK_STR(run("mv x t"), "");              // the file is picked
+    CHECK_STR(run("ls t"), "x\n");
+    CHECK_STR(run("ls"), "x/\nt/\n");
+    CHECK_STR(run("mv x t"), "");              // only the folder is left, so it moves
+    CHECK_STR(run("ls t"), "x\nx/\n");
+    CHECK_STR(run("ls"), "t/\n");
+    CHECK_STR(run("mv t/x/ y"), "");           // trailing '/' picks the folder
+    CHECK_STR(run("ls t"), "x\n");
+    CHECK_STR(run("mv t/x y"), "");            // file x goes into folder y
+    CHECK_STR(run("ls y"), "x\n");
+    CHECK_STR(run("cat y/x"), "file x\n");
+    CHECK_STR(run("mv y/x y/x"), "mv: target 'y/x' already exists\n");
+    CHECK_STR(run("mkdir y/x"), "");
+    CHECK_STR(run("mv y/x y/x"), "");          // file y/x into folder y/x
+    CHECK_STR(run("ls y"), "x/\n");
+    CHECK_STR(run("cat y/x/x"), "file x\n");
+}
+
 int main(void) {
     test_parser();
     test_dispatch();
@@ -506,6 +716,8 @@ int main(void) {
     test_cwd_overflow();
     test_script();
     test_process_commands();
+    test_find();
+    test_mv();
     printf("%d passed, %d failed\n", passes, fails);
     return fails != 0;
 }
