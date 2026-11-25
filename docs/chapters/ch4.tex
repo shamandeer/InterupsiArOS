@@ -1,0 +1,121 @@
+\chapter{Process, Scheduler, Multitasking}
+
+Very important note: Karena keterbatasan waktu, bagian ini akan dipersingkat dan agak low effort.
+
+\section{Process Isolation}
+
+Salah satu aspek penting dalam OS adalah multitasking, yaitu kemampuan sistem untuk menjalankan banyak proses. Pada CPU multicore, paralelisme proses (bersamaan) asli bisa terjadi, namun dalam CPU single core, yang terjadi adalah konkurensi (pergantian pengerjaan proses dalam waktu yang sangat cepat sehingga memberi kesan paralel). Dalam menjalankan sebuah proses, dibutuhkan isolasi proses agar satu proses tidak meng-corrupt proses lain. Beberapa proses bisa menggunakan virtual address yang sama (karena memang virtual address dialokasikan oleh proses), namun tentunya physical address-nya berbeda.
+
+\section{process.h}
+
+Proses dapat direpresentasikan dalam bentuk PCB (Process Control Block) yang menyimpan metadata, context process, dan juga informasi tentang memori yang digunakan suatu proses.
+
+Metadata dapat memuat apakah suatu proses aktif, id sebuah proses, state sebuah proses, dan nama proses. State sebuah proses di sini bisa ready, running, ataupun waiting.
+
+Context memuat kondisi terakhir proses saat ingin switch (perubahan proses). Context memuat data register CPU, EIP, EFLAGS, dan CR3 (page directory virtual addr).
+
+Informasi memori memuat virtual address yang digunakan, page frame yang digunakan.
+
+\section{Multi-virtual Address Space}
+
+Paging perlu disesuaikan untuk multiple proses, di mana tiap proses menggunakan 1 Page Directory. Sebelumnya, ada beberapa perubahan pada paging.c.
+
+Page directory proses dicatat pada tracker dengan kapasitas \texttt{PAGING\_DIRECTORY\_TABLE\_MAX\_COUNT}. Page directory baru tetap berbagi mapping kernel, tetapi bagian user-nya terpisah.
+
+\begin{lstlisting}[language=c]
+struct PageDirectory *paging_create_new_page_directory(void);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Membuat page directory kosong untuk address space proses baru.
+\begin{enumerate}
+    \item Cari slot page directory yang kosong di list page directory. Jika semua slot penuh, return NULL.
+    \item Tandai slot sebagai terpakai, lalu kosongkan.
+    \item Copy PDE indeks 768 s.d. 1022 dari page directory kernel. Jadi higher half kernel masih ada dan kernel masi bisa jalan walaupun cr3 berubah. PDE user (0 s.d. 767) masi kosong.
+    \item PDE indeks 1023 diisi alamat fisik page directory baru itu sendiri (rekursif)
+    \item Return pointer virtual page directory yang baru dibuat.
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Simpan alamat page. Sesuaikan virtual address untuk memperoleh physical address-nya, lalu salin ke cr3.
+
+\begin{lstlisting}[language=c]
+bool paging_free_page_directory(struct PageDirectory *page_dir);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Free page directory proses.
+\begin{enumerate}
+    \item Return false kalo page directory sedang aktif, gada di page directory list, atau unused
+    \item Free frame user, tapi jangan yang kernel.
+    \item Atur atur slot dan flag, return true kalo berhasil
+\end{enumerate}
+
+Pada process.c, ada process manager state yang menyimpan jumlah proses aktif dan id terakhir.
+
+\begin{lstlisting}[language=c]
+static int32_t process_list_get_inactive_index(void);
+\end{lstlisting}
+\textbf{Penjelasan:} Mencari indeks PCB pertama yang prosesnya tdk aktif. Invalid kalo gada.
+
+\begin{lstlisting}[language=c]
+static uint32_t process_generate_new_pid(void);
+\end{lstlisting}
+\textbf{Penjelasan:} Update pid (increment)
+
+\begin{lstlisting}[language=c]
+static int32_t process_list_get_index_by_pid(uint32_t pid);
+\end{lstlisting}
+\textbf{Penjelasan:} Return indeks PCB dengan pid yang bersesuaian dan harus aktif. Kalo gada invalid.
+
+\begin{lstlisting}[language=c]
+struct ProcessControlBlock *process_get_current_running_pcb_pointer(void);
+\end{lstlisting}
+\textbf{Penjelasan:} Return address PCB yang aktif dan running. Return null kalo gada.
+
+\begin{lstlisting}[language=c]
+static bool process_allocate_page(struct ProcessControlBlock *pcb, struct PageDirectory *page_dir, void *virtual_addr);
+\end{lstlisting}
+\textbf{Penjelasan:} Alokasi satu page untuk proses. Return false kalo udah melebihi kapasitas atau emg ga ada yang free. Simpen vaddr dan frame used-nya.
+
+\begin{lstlisting}[language=c]
+static void process_release_pages(struct ProcessControlBlock *pcb, struct PageDirectory *page_dir);
+\end{lstlisting}
+\textbf{Penjelasan:} Free semua page user pada PCB tertentu dengan paging free user page frame.
+
+\begin{lstlisting}[language=c]
+int32_t process_create_user_process(struct EXT2DriverRequest request);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Membuat address space dan context awal untuk executable user. Di sini kita pake retcode untuk success codes.
+\begin{enumerate}
+    \item Simpan page directory lama dan set yang baru also pcb baru sebagai NULL dulu. Validasi jumlah proses, entrypoint ga nyentuh di higher-half kernel, dan memori mencukupi.
+    \item Cari PCB kosong dan bersihin. Buat page directory baru. Pakai page directory baru di cr3.
+    \item Alokasikan 80 pages untuk program dan catet di PCB-nya.
+    \item Bersihin sisa data di request.buf, lalu load executable
+    \item Siapkan context, metadata, all that.
+    \item Kalo gagal setelah page directory dibuat, free page, free page directory, free PCB, dan pake old page directory.
+\end{enumerate}
+
+\begin{lstlisting}[language=c]
+bool process_destroy(uint32_t pid);
+\end{lstlisting}
+
+\textbf{Penjelasan:} Mencari proses aktif berdasarkan pid terus di free.
+\begin{enumerate}
+    \item Kalo ga ketemu, return false. Sebaliknya simpan pcb, page dir, old page dir yang bakal dihapus.
+    \item Aktifkan page directory proses tersebut, lalu release semua page.
+    \item Kalo directory proses yang didestroy sebelumnya aktif, pindah ke directory kernel. Klo ga, pake current page directory aja
+    \item Bebaskan page directory proses sisanya atur-atur n return true.
+\end{enumerate}
+
+\section{Scheduler}
+
+Uhh... dan yap. we are out of time. will continue this after dl (tp tentu ga bakal di push)
+
+\section{Closing Remarks}
+
+Terima kasih LabSister atas kesempatan mengerjakan tubes yang cukup seru ini. Awalnya ch0 dan ch1 mudah, tapi begitu masuk ke ch2+, semuanya berubah dan menjadi sulit. Mungkin dari kami ada yang menggunakan LLM dengan banyak, ada juga yang secukupnya. Namun, yang kami dapat adalah ilmu tentang bagaimana membuat sistem operasi itu tidak mudah.
+
+Personal thanks dan apresiasi sebesar-besarnya untuk siapapun yang membaca laporan atau guidebook ini (boleh reach out kalo udh baca sampe akhir hehe). Laporan ini dibuat dengan cinta dengan tujuan agar anggota saling memahami bagian-bagian lain, tanpa buzzword-buzzword LLM. Sekali lagi, terima kasih. Sampai ketemu di Jarkom, kakak-kakak Sister!
