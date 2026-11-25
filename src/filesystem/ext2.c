@@ -886,3 +886,107 @@ int8_t delete(struct EXT2DriverRequest request) {
     commit_metadata();
     return 0;
 }
+
+/* [E] MOVE */
+
+// a name that can be stored as a new entry: not empty, no '/' or '\0', not "." or ".."
+static bool is_valid_entry_name(const char *name, uint8_t name_len) {
+    if (name == NULL || name_len == 0) {
+        return false;
+    }
+    if (has_invalid_char(name, name_len)) {
+        return false;
+    }
+    if (is_dot_entry(name, name_len)) {
+        return false;
+    }
+    return true;
+}
+
+// entry .. is always the second entry on the first block of a folder
+static void set_parent_entry(uint32_t dir_inode, uint32_t parent_inode) {
+    struct EXT2Inode dir;
+    struct BlockBuffer block;
+    load_node(&dir, dir_inode);
+    read_blocks(&block, dir.i_block[0], 1);
+
+    struct EXT2DirectoryEntry *self = get_directory_entry(block.buf, 0);
+    struct EXT2DirectoryEntry *parent = get_next_directory_entry(self);
+    parent->inode = parent_inode;
+    write_blocks(&block, dir.i_block[0], 1);
+}
+
+int8_t move(struct EXT2DriverRequest src, struct EXT2DriverRequest dst) {
+    // 5: invalid name, also covers root (its only name is "." inside itself)
+    if (!is_valid_entry_name(src.name, src.name_len) || !is_valid_entry_name(dst.name, dst.name_len)) {
+        return 5;
+    }
+
+    // 1: source parent or source entry not found
+    struct EXT2Inode parent;
+    if (!load_directory_node(&parent, src.parent_inode)) {
+        return 1;
+    }
+    uint8_t file_type;
+    uint32_t inode;
+    if (src.is_directory) {
+        file_type = EXT2_FT_DIR;
+        inode = find_directory_entry(src.parent_inode, src.name, src.name_len);
+    } else {
+        file_type = EXT2_FT_REG_FILE;
+        inode = find_file_entry(src.parent_inode, src.name, src.name_len);
+    }
+    if (inode == 0) {
+        return 1;
+    }
+    if (inode == ROOT_INODE) {
+        return 5;
+    }
+
+    // 2: destination parent is not a valid folder
+    if (!load_directory_node(&parent, dst.parent_inode)) {
+        return 2;
+    }
+
+    // 4: a folder can not go into itself or into one of its descendants
+    if (src.is_directory) {
+        if (dst.parent_inode == inode) {
+            return 4;
+        }
+        // walk up from the destination to root through ".."
+        uint32_t current = dst.parent_inode;
+        uint32_t steps = 0;
+        while (current != ROOT_INODE) {
+            current = find_directory_entry(current, "..", 2);
+            steps++;
+            // broken tree (missing .. or a loop), stop instead of walking forever
+            if (current == 0 || steps > INODES_PER_GROUP * GROUPS_COUNT) {
+                return -1;
+            }
+            if (current == inode) {
+                return 4;
+            }
+        }
+    }
+
+    // 3: destination name already used by an entry of the same type
+    if (is_name_taken(dst.parent_inode, dst.name, dst.name_len, file_type)) {
+        return 3;
+    }
+
+    // every check passed, now change the disk. Same inode, the data is not copied
+    if (!add_directory_entry(dst.parent_inode, inode, dst.name, dst.name_len, file_type)) {
+        return 6;
+    }
+    if (!remove_directory_entry(src.parent_inode, inode, src.name, src.name_len)) {
+        // should not happen (source was found above), undo the new entry
+        remove_directory_entry(dst.parent_inode, inode, dst.name, dst.name_len);
+        commit_metadata();
+        return -1;
+    }
+    if (src.is_directory && src.parent_inode != dst.parent_inode) {
+        set_parent_entry(inode, dst.parent_inode);
+    }
+    commit_metadata();
+    return 0;
+}

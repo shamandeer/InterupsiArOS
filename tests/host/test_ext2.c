@@ -40,6 +40,13 @@ static uint32_t bitmap_free_blocks(void) {
     return n;
 }
 
+static uint32_t bitmap_free_inodes(void) {
+    uint32_t n = 0;
+    for (uint32_t g = 0; g < GROUPS_COUNT; g++)
+        n += count_zero_bits(disk_bgd(g).bg_inode_bitmap, INODES_PER_GROUP);
+    return n;
+}
+
 // free counters in superblock and every BGD must match the bitmaps on disk
 static bool counters_match_bitmaps(void) {
     struct BlockBuffer b;
@@ -304,6 +311,119 @@ static void test_sample_image(const char *path) {
     CHECK(is_directory_empty(folder2));
 }
 
+static int8_t move_entry(uint32_t src_parent, const char *src_name, bool is_dir, uint32_t dst_parent, const char *dst_name) {
+    struct EXT2DriverRequest src = make_request(src_parent, src_name, NULL, 0, is_dir);
+    struct EXT2DriverRequest dst = make_request(dst_parent, dst_name, NULL, 0, is_dir);
+    return move(src, dst);
+}
+
+static void test_move(void) {
+    fake_disk_reset();
+    initialize_filesystem_ext2();
+    uint8_t buf[256];
+
+    // tree: /a.txt /c.txt /d/ /e/ /d/sub/ /d/sub/deep/ /d/sub/inner.txt
+    CHECK(write_file(ROOT_INODE, "a.txt", "alpha", 5) == 0);
+    CHECK(write_file(ROOT_INODE, "c.txt", "c", 1) == 0);
+    CHECK(write_folder(ROOT_INODE, "d") == 0);
+    CHECK(write_folder(ROOT_INODE, "e") == 0);
+    uint32_t a = find_file_entry(ROOT_INODE, "a.txt", 5);
+    uint32_t d = find_directory_entry(ROOT_INODE, "d", 1);
+    uint32_t e = find_directory_entry(ROOT_INODE, "e", 1);
+    CHECK(write_folder(d, "sub") == 0);
+    uint32_t sub = find_directory_entry(d, "sub", 3);
+    CHECK(write_folder(sub, "deep") == 0);
+    uint32_t deep = find_directory_entry(sub, "deep", 4);
+    CHECK(write_file(sub, "inner.txt", "inside", 6) == 0);
+
+    uint32_t free_blocks = bitmap_free_blocks();
+    uint32_t free_inodes = bitmap_free_inodes();
+
+    // rename a file in the same folder, same inode, content kept
+    CHECK(move_entry(ROOT_INODE, "a.txt", false, ROOT_INODE, "b.txt") == 0);
+    CHECK(find_file_entry(ROOT_INODE, "a.txt", 5) == 0);
+    CHECK(find_file_entry(ROOT_INODE, "b.txt", 5) == a);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_file(ROOT_INODE, "b.txt", buf, sizeof(buf)) == 0 && memcmp(buf, "alpha", 5) == 0);
+
+    // move a file to another folder
+    CHECK(move_entry(ROOT_INODE, "b.txt", false, e, "b.txt") == 0);
+    CHECK(find_file_entry(ROOT_INODE, "b.txt", 5) == 0);
+    CHECK(find_file_entry(e, "b.txt", 5) == a);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_file(e, "b.txt", buf, sizeof(buf)) == 0 && memcmp(buf, "alpha", 5) == 0);
+
+    // rename a folder, .. stays the same parent
+    CHECK(move_entry(d, "sub", true, d, "renamed") == 0);
+    CHECK(find_directory_entry(d, "sub", 3) == 0);
+    CHECK(find_directory_entry(d, "renamed", 7) == sub);
+    CHECK(find_directory_entry(sub, "..", 2) == d);
+
+    // move a folder with a file and a subfolder, .. points to the new parent
+    CHECK(move_entry(d, "renamed", true, e, "moved") == 0);
+    CHECK(find_directory_entry(d, "renamed", 7) == 0);
+    CHECK(is_directory_empty(d));
+    CHECK(find_directory_entry(e, "moved", 5) == sub);
+    CHECK(find_directory_entry(sub, "..", 2) == e);
+    CHECK(find_directory_entry(sub, "deep", 4) == deep);
+    CHECK(find_directory_entry(deep, "..", 2) == sub);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_file(sub, "inner.txt", buf, sizeof(buf)) == 0 && memcmp(buf, "inside", 6) == 0);
+
+    // a file and a folder may share a name: folder d -> folder "c.txt" next to file c.txt, then back
+    CHECK(move_entry(ROOT_INODE, "d", true, ROOT_INODE, "c.txt") == 0);
+    CHECK(find_directory_entry(ROOT_INODE, "c.txt", 5) == d);
+    CHECK(find_file_entry(ROOT_INODE, "c.txt", 5) != 0);
+    CHECK(move_entry(ROOT_INODE, "c.txt", true, ROOT_INODE, "d") == 0);
+
+    // 1: source not found (no entry, wrong type, invalid parent)
+    CHECK(move_entry(ROOT_INODE, "nope", false, ROOT_INODE, "x") == 1);
+    CHECK(move_entry(ROOT_INODE, "e", false, ROOT_INODE, "x") == 1);
+    CHECK(move_entry(ROOT_INODE, "c.txt", true, ROOT_INODE, "x") == 1);
+    CHECK(move_entry(999, "e", true, ROOT_INODE, "x") == 1);
+
+    // 2: destination parent invalid or a file
+    CHECK(move_entry(ROOT_INODE, "e", true, 999, "x") == 2);
+    CHECK(move_entry(ROOT_INODE, "e", true, a, "x") == 2);
+
+    // 3: destination name taken by the same type (also same place, same name)
+    CHECK(move_entry(e, "b.txt", false, ROOT_INODE, "c.txt") == 3);
+    CHECK(move_entry(ROOT_INODE, "d", true, ROOT_INODE, "e") == 3);
+    CHECK(move_entry(ROOT_INODE, "d", true, ROOT_INODE, "d") == 3);
+
+    // 4: folder into itself, its child, its grandchild
+    CHECK(move_entry(ROOT_INODE, "e", true, e, "e") == 4);
+    CHECK(move_entry(ROOT_INODE, "e", true, sub, "x") == 4);
+    CHECK(move_entry(ROOT_INODE, "e", true, deep, "x") == 4);
+    CHECK(move_entry(e, "moved", true, deep, "x") == 4);
+
+    // 5: invalid names, "." / ".." as source or destination
+    CHECK(move_entry(ROOT_INODE, ".", true, d, "x") == 5);
+    CHECK(move_entry(ROOT_INODE, "..", true, d, "x") == 5);
+    CHECK(move_entry(ROOT_INODE, "e", true, d, "..") == 5);
+    CHECK(move_entry(ROOT_INODE, "e", true, d, "a/b") == 5);
+    CHECK(move_entry(ROOT_INODE, "e", true, d, "") == 5);
+    {
+        struct EXT2DriverRequest src = make_request(ROOT_INODE, "e", NULL, 0, true);
+        struct EXT2DriverRequest dst = make_request(d, "x", NULL, 0, true);
+        dst.name = NULL;
+        CHECK(move(src, dst) == 5);
+    }
+
+    // failed moves left the tree untouched
+    CHECK(find_directory_entry(ROOT_INODE, "e", 1) == e);
+    CHECK(find_directory_entry(ROOT_INODE, "d", 1) == d);
+    CHECK(find_directory_entry(e, "..", 2) == ROOT_INODE);
+    CHECK(find_directory_entry(e, "moved", 5) == sub);
+    CHECK(find_file_entry(e, "b.txt", 5) == a);
+    CHECK(is_directory_empty(d));
+
+    // no block or inode leaked or freed by move
+    CHECK(bitmap_free_blocks() == free_blocks);
+    CHECK(bitmap_free_inodes() == free_inodes);
+    CHECK(counters_match_bitmaps());
+}
+
 int main(int argc, char **argv) {
     test_init();
     test_roundtrip();
@@ -313,6 +433,7 @@ int main(int argc, char **argv) {
     test_directory_grow_and_shrink();
     test_mount();
     test_sample_image(argc > 1 ? argv[1] : ".kit/ch2/sample-image.bin");
+    test_move();
 
     printf("%d passed, %d failed\n", passes, fails);
     return fails != 0;
